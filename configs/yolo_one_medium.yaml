@@ -1,0 +1,31 @@
+# YOLO-One Medium Configuration
+
+# Model Architecture
+backbone:
+  type: "EfficientNet"
+  variant: "b0"
+  pretrained: true
+
+neck:
+  type: "PAFPN"
+  channels: [64, 128, 256]
+
+head:
+  type: "SingleClassHead"
+  channels: 64
+  num_classes: 1
+
+# Training Parameters
+epochs: 100
+batch_size: 32
+learning_rate: 0.001
+optimizer: "AdamW"
+scheduler: "CosineAnnealingLR"
+
+# Data Augmentation
+augmentation:
+  mosaic: 0.5
+  mixup: 0.1
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
