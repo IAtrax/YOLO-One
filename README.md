@@ -269,17 +269,6 @@ model.export(format='xilinx_dpu',
 
 ### Universal Installation
 SOON!
-### Platform-Specific Setup
-```bash
-# Edge/IoT devices
-pip install yolo-one[edge]
-
-# Cloud deployment
-pip install yolo-one[cloud]
-
-# Development
-pip install yolo-one[dev]
-```
 
 ## 🌟 Why Choose YOLO-One?
 
