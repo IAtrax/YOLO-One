@@ -268,19 +268,7 @@ model.export(format='xilinx_dpu',
 ## 🛠️ Installation & Setup
 
 ### Universal Installation
-```bash
-# Base installation
-pip install yolo-one
-
-# With platform optimizations
-pip install yolo-one[cuda]      # NVIDIA GPU support
-pip install yolo-one[rocm]      # AMD GPU support  
-pip install yolo-one[coreml]    # Apple Silicon
-pip install yolo-one[tensorrt]  # TensorRT optimization
-pip install yolo-one[openvino]  # Intel optimization
-pip install yolo-one[mobile]    # Mobile deployment tools
-```
-
+SOON!
 ### Platform-Specific Setup
 ```bash
 # Edge/IoT devices
@@ -346,7 +334,3 @@ pip install yolo-one[dev]
 - Cloud engineers
 - Research labs
 - Enterprise teams
-
-**Résultat : YOLO-One devient THE standard pour single-class detection, pas juste mobile ! 🌟**
-
-Cette approche universelle va maximiser l'impact et les citations ! 🚀
