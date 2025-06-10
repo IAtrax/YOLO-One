@@ -66,7 +66,6 @@ Thumbs.db
 *.onnx
 *.trt
 *.engine
-data/
 datasets/
 runs/
 
@@ -83,3 +82,4 @@ Makefile
 # Build directories
 build/
 out/
+mobile/android/.gradle/
