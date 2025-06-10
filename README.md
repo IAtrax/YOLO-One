@@ -19,6 +19,8 @@
 </div>
 
 ---
+> **⚠️ WORK IN PROGRESS** - YOLO-One is currently under active development. The codebase, documentation, and features are being actively implemented and may change frequently. Star ⭐ this repository to stay updated on our progress!
+---
 
 ## 🎯 Why YOLO-One?
 
