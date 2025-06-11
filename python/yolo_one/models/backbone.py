@@ -1,5 +1,10 @@
-# python/yolo_one/models/backbone.py
+"""
+Iatrax Team - 2025 - https://iatrax.com
 
+LICENSE: MIT
+
+BACKBONE MODULE FOR YOLO-ONE
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,8 +33,6 @@ class YoloOneBlock(nn.Module):
                  use_residual: bool = True):
         super().__init__()
         self.use_residual = use_residual and stride == 1 and in_channels == out_channels
-        
-        # Simplified block for single class detection
         self.conv1 = nn.Conv2d(in_channels, out_channels // 2, 1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels // 2)
         
