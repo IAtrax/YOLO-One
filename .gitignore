@@ -83,3 +83,4 @@ Makefile
 build/
 out/
 mobile/android/.gradle/
+.github/
