@@ -79,16 +79,12 @@ Mobile:     TBD                 # Core ML / TFLite
 
 ## 🚀 Quick Start
 
-### Installation
+## 🛠️ Installation
+
+### 🚀 Quick Start (Recommended)
 ```bash
-# Clone repository
-git clone https://github.com/IAtrax/YOLO-One.git
-cd YOLO-One
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run architecture test
+pip install git+https://github.com/IAtrax/YOLO-One.git
+# Run architecture test script to validate installation
 python tests/test_architecture.py
 ```
 
