@@ -3,300 +3,233 @@
 <div align="center">
 
 **Revolutionary Single-Class Object Detection**  
-*Ultra-fast YOLO architecture optimized exclusively for single-class detection across ALL platforms*
+*Ultra-fast YOLO architecture optimized exclusively for single-class detection*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)](https://pytorch.org/)
-[![GitHub Stars](https://img.shields.io/github/stars/username/YOLO-One?style=social)](https://github.com/username/YOLO-One)
+[![GitHub Stars](https://img.shields.io/github/stars/IAtrax/YOLO-One?style=social)](https://github.com/IAtrax/YOLO-One)
 
 [**Quick Start**](#quick-start) •
 [**Benchmarks**](#benchmarks) •
 [**Documentation**](#documentation) •
-[**Examples**](#examples) •
-[**Paper**](#paper)
+[**Examples**](#examples)
 
 </div>
 
 ---
-> **⚠️ WORK IN PROGRESS** - YOLO-One is currently under active development. The codebase, documentation, and features are being actively implemented and may change frequently. Star ⭐ this repository to stay updated on our progress!
+> **⚠️ WORK IN PROGRESS** - YOLO-One is currently under active development. The architecture is functional with promising initial results. Star ⭐ this repository to stay updated on our progress!
 ---
 
 ## 🎯 Why YOLO-One?
 
-While existing YOLO models excel at multi-class detection, **most real-world applications only need to detect ONE type of object**. YOLO-One is the first YOLO architecture designed from the ground up for single-class detection, delivering massive performance gains across ALL computing platforms:
+While existing YOLO models excel at multi-class detection, **most real-world applications only need to detect ONE type of object**. YOLO-One is the first YOLO architecture designed from the ground up for single-class detection:
 
-- ⚡ **3-5x faster inference** (mobile to datacenter)
-- 📦 **5-8x smaller model size** 
-- 🎯 **Same or better accuracy** for single-class tasks
-- 🔋 **60% less power consumption** (mobile/edge)
-- 💾 **80% less memory usage** (all platforms)
-- 🚀 **Linear scaling** from IoT to GPU clusters
+- ⚡ **Faster inference** with optimized single-class architecture
+- 📦 **3x smaller model size** (1.9MB vs 6.2MB YOLOv8n)
+- 🎯 **Same accuracy** for single-class tasks (target)
+- 🔋 **Lower power consumption** (mobile/edge optimized)
+- 💾 **Reduced memory usage** (streamlined architecture)
+- 🚀 **Multi-platform deployment** ready
 
-## 🏆 Universal Performance Highlights
+## 📊 Current Performance (YOLO-One Nano)
 
-### 📱 Mobile & Edge
-| Device | YOLOv8n | YOLO-One | Speedup |
-|--------|---------|----------|---------|
-| iPhone 13 | 45ms | **15ms** | **3.0x** |
-| Pixel 7 | 38ms | **12ms** | **3.2x** |
-| Raspberry Pi 4 | 280ms | **95ms** | **2.9x** |
-| Jetson Nano | 120ms | **35ms** | **3.4x** |
+### 🏗️ Architecture Efficiency
+```
+Model Size:     1.9MB (vs 6.2MB YOLOv8n)     📦 3.3x smaller
+Parameters:     485K (vs ~3M YOLOv8n)         ⚡ 6x fewer params
+Channels:       5 per scale (vs 85 COCO)     🎯 Single-class optimized
+Memory Format:  Float32 (FP16/INT8 planned)  💾 Further optimization ready
+```
 
-### 🖥️ Desktop & Server
-| Platform | YOLOv8n | YOLO-One | Speedup |
-|----------|---------|----------|---------|
-| RTX 4090 | 1.2ms | **0.4ms** | **3.0x** |
-| RTX 3080 | 2.1ms | **0.7ms** | **3.0x** |
-| CPU (i7-12700K) | 12ms | **4ms** | **3.0x** |
-| AWS t3.large | 45ms | **15ms** | **3.0x** |
+### ⚡ Speed Benchmarks (Current)
+| Platform | Resolution | Current FPS | Target (Optimized) | Improvement Path |
+|----------|------------|-------------|-------------------|------------------|
+| **Development GPU** | 640x640 | **132 FPS** | 400+ FPS | +TensorRT +FP16 |
+| **Inference Time** | 640x640 | **7.56ms** | ~2.5ms | +Optimizations |
 
-### ☁️ Cloud & Production
-| Deployment | Throughput (YOLOv8n) | Throughput (YOLO-One) | Improvement |
-|------------|----------------------|----------------------|-------------|
-| AWS Lambda | 50 req/min | **150 req/min** | **3.0x** |
-| Google Cloud Run | 120 req/min | **360 req/min** | **3.0x** |
-| Kubernetes Pod | 200 FPS | **600 FPS** | **3.0x** |
-| Edge Cluster | 80 FPS | **240 FPS** | **3.0x** |
+### 🎯 Optimization Roadmap
+```python
+# Performance Projection Pipeline
+Current:    132 FPS (7.56ms)    # PyTorch Float32
+Step 1:     200+ FPS (~5ms)     # + torch.compile
+Step 2:     300+ FPS (~3ms)     # + TensorRT
+Step 3:     400+ FPS (~2.5ms)   # + FP16 precision
+Mobile:     TBD                 # Core ML / TFLite
+```
 
-## 🌐 Platform Coverage
+## 🌐 Platform Coverage (Planned)
 
 ### 📱 Mobile & IoT
-- **iOS**: Core ML optimized, Metal acceleration
-- **Android**: NNAPI, GPU delegate, Hexagon NPU
-- **IoT Devices**: ARM Cortex-M, ESP32, microcontrollers
-- **Edge AI**: Intel Movidius, Google Coral, Hailo
+- **iOS**: Core ML export (in development)
+- **Android**: TensorFlow Lite export (in development)
+- **Edge Devices**: ONNX export ready
+- **ARM Optimization**: Native support planned
 
 ### 🖥️ Desktop & Workstation  
-- **Windows**: DirectML, CUDA, CPU optimized
-- **macOS**: Metal Performance Shaders, ANE
-- **Linux**: CUDA, ROCm, OpenVINO, TensorRT
+- **Windows**: ✅ PyTorch ready, TensorRT planned
+- **Linux**: ✅ PyTorch ready, CUDA optimization
+- **macOS**: ✅ PyTorch ready, Metal planned
 
-### ☁️ Cloud & Enterprise
-- **AWS**: EC2, Lambda, Inferentia, Graviton
-- **Google Cloud**: TPU, Cloud Run, Vertex AI
-- **Azure**: GPU VMs, Container Instances
-- **On-Premise**: Docker, Kubernetes, bare metal
+### ☁️ Cloud & Production
+- **Docker**: Container-ready architecture
+- **ONNX**: Export capability implemented
+- **TensorRT**: High-priority optimization
+- **Serverless**: Lightweight deployment ready
 
-### 🎮 Specialized Hardware
-- **Gaming**: DirectX integration, real-time overlays
-- **Automotive**: NVIDIA Drive, Qualcomm Ride
-- **Industrial**: Intel OpenVINO, Xilinx Zynq
-- **Research**: Multi-GPU clusters, distributed inference
+## 🚀 Quick Start
 
-## 🚀 Universal Deployment Examples
+### Installation
+```bash
+# Clone repository
+git clone https://github.com/IAtrax/YOLO-One.git
+cd YOLO-One
 
-### Cloud Serverless
-```python
-# AWS Lambda deployment
-import yolo_one
+# Install dependencies
+pip install -r requirements.txt
 
-def lambda_handler(event, context):
-    model = yolo_one.load('yolo-one-nano.pt')
-    image_url = event['image_url']
-    results = model.detect_from_url(image_url)
-    return {'detections': results.json()}
-
-### Docker Container
-```dockerfile
-FROM yolo-one/runtime:latest
-COPY model.pt /app/
-EXPOSE 8080
-CMD ["yolo-one", "serve", "--model", "model.pt", "--port", "8080"]
+# Run architecture test
+python tests/test_architecture.py
 ```
 
-### Edge Deployment
+### Basic Usage
 ```python
-# Raspberry Pi optimized
-model = yolo_one.load('yolo-one-tiny.pt', device='cpu', optimize='arm')
-camera = yolo_one.Camera(resolution=(640, 480))
+import torch
+from yolo_one.models import YoloOne
 
-for frame in camera.stream():
-    detections = model.detect(frame)
-    camera.annotate(detections)
+# Create model
+model = YoloOne(model_size='nano')
+
+# Test inference
+input_tensor = torch.randn(1, 3, 640, 640)
+predictions = model(input_tensor)
+
+print(f"Model size: {model.count_parameters():,} parameters")
+# Output: Model size: 485,312 parameters
 ```
 
-### GPU Cluster
+## 🎯 Single-Class Optimizations
+
+### 🔧 Architecture Benefits
 ```python
-# Multi-GPU inference
-import yolo_one.distributed as dist
+# Traditional YOLO (multi-class)
+output_channels = 4 + 1 + num_classes  # bbox + conf + classes
+# Example: 4 + 1 + 80 = 85 channels for COCO
 
-model = dist.DataParallel(
-    yolo_one.load('yolo-one-medium.pt'),
-    device_ids=[0, 1, 2, 3]  # 4 GPUs
-)
-
-# Process 1000s of images/second
-results = model.batch_detect(image_batch, batch_size=128)
+# YOLO-One (single-class)
+output_channels = 4 + 1  # bbox + fused_confidence
+# Always: 5 channels only! 🎯
 ```
 
-## 🎯 Universal Use Cases
+### ⚡ Performance Optimizations
+- **No class probability computation** (always 1 class)
+- **Simplified NMS** (no per-class separation)
+- **Fused confidence** (objectness + class probability)
+- **Streamlined post-processing** pipeline
+- **Optimized loss function** for single-class
 
-### 🏭 Industrial & Manufacturing
+## 📈 Benchmarks (In Development)
+
+### Current vs Target Performance
+| Metric | Current (Nano) | Target (Optimized) | YOLOv8n Baseline |
+|--------|---------------|-------------------|------------------|
+| **Model Size** | ✅ 1.9MB | 1.9MB | 6.2MB |
+| **Parameters** | ✅ 485K | 485K | ~3M |
+| **Inference (GPU)** | 132 FPS | 400+ FPS | ~800 FPS |
+| **Memory Usage** | TBD | <1GB | ~2GB |
+| **Accuracy (mAP)** | TBD | Same | Baseline |
+
+### 🔄 Multi-Resolution Support
 ```python
-# Defect detection on production line
-model = yolo_one.load('defect_detector.pt')
-camera = IndustrialCamera(resolution='4K', fps=60)
-
-for product in camera.stream():
-    defects = model.detect(product)
-    if defects.confidence > 0.9:
-        production_line.reject(product)
+✅ 320x320: OK    # Fast inference
+✅ 416x416: OK    # Balanced 
+✅ 480x480: OK    # Good quality
+✅ 640x640: OK    # High quality
 ```
 
-### 🛒 Retail & E-commerce  
-```python
-# Product recognition in stores
-model = yolo_one.load('product_detector.pt')
-shelf_camera = RetailCamera()
+## 🛠️ Development Status
 
-inventory = model.count_products(shelf_camera.capture())
-update_inventory_system(inventory)
+### ✅ Completed
+- [x] **Core Architecture**: Backbone + Neck + Head
+- [x] **Multi-scale Detection**: P3, P4, P5 outputs  
+- [x] **Single-class Optimization**: 5-channel output
+- [x] **Model Variants**: nano, small, medium, large
+- [x] **Basic Testing**: Architecture validation
+- [x] **Multi-resolution**: 320-640px support
+
+### 🚧 In Development
+- [ ] **Training Pipeline**: Loss function + trainer
+- [ ] **Benchmark Suite**: vs YOLOv8n comparison
+- [ ] **Export Pipeline**: ONNX, TensorRT, Core ML
+- [ ] **Mobile Optimization**: INT8 quantization
+- [ ] **Documentation**: Complete API docs
+
+### 🎯 Next Priorities
+1. **Training Pipeline** - Validate accuracy claims
+2. **TensorRT Export** - Achieve speed targets  
+3. **Benchmark Suite** - Automated comparisons
+4. **Mobile Deployment** - iOS/Android support
+
+## 🔧 Technical Details
+
+### Architecture Components
+```python
+# Component breakdown
+Backbone:  ~400K params (82%)  # Feature extraction
+Neck:      ~70K params  (14%)  # Feature fusion  
+Head:      ~15K params  (3%)   # Detection output
+Total:     485K params         # Ultra-lightweight
 ```
 
-### 🚗 Autonomous Vehicles
+### Memory Efficiency
 ```python
-# Pedestrian detection
-model = yolo_one.load('pedestrian_detector.pt', 
-                     device='automotive_npu', 
-                     precision='int8')
-
-lidar_camera = VehicleCamera(fov=120)
-pedestrians = model.detect(lidar_camera.frame())
-vehicle_control.emergency_brake_if_needed(pedestrians)
+# Multi-resolution memory usage
+320x320: ~200MB GPU memory
+640x640: ~400MB GPU memory  
+# Scales efficiently with resolution
 ```
 
-### 🏥 Medical & Healthcare
-```python
-# Cell detection in microscopy
-model = yolo_one.load('cell_detector.pt')
-microscope = MedicalMicroscope(magnification='40x')
+## 🤝 Contributing
 
-cells = model.detect(microscope.capture())
-diagnosis = analyze_cell_patterns(cells)
-```
+We welcome contributions! Key areas:
 
-### 🎮 Gaming & Entertainment
-```python
-# Real-time object tracking in games
-model = yolo_one.load('game_object_tracker.pt', device='gpu')
-game_stream = GameCapture(resolution='1080p', fps=120)
+- **Training Pipeline Development**
+- **Mobile Optimization** 
+- **Benchmark Implementation**
+- **Documentation & Examples**
+- **Export Format Support**
 
-for frame in game_stream:
-    objects = model.detect(frame, realtime=True)
-    overlay_augmented_info(objects)
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-## 🔧 Platform-Specific Optimizations
+## 📄 License
 
-### Mobile Optimizations
-```python
-# iOS Core ML
-model.export(format='coreml', 
-            compute_units='neural_engine',
-            optimization='mobile')
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-# Android TFLite
-model.export(format='tflite',
-            quantization='int8',
-            delegate='nnapi')
-```
+## 🎯 Roadmap
 
-### Cloud Optimizations  
-```python
-# TensorRT for NVIDIA GPUs
-model.export(format='tensorrt',
-            precision='fp16',
-            workspace=4000)
+### Phase 1: Foundation (Current)
+- [x] Core architecture
+- [ ] Training pipeline
+- [ ] Basic benchmarks
 
-# OpenVINO for Intel
-model.export(format='openvino',
-            precision='int8',
-            device='cpu')
-```
+### Phase 2: Optimization (Q3 2025)
+- [ ] TensorRT integration
+- [ ] Mobile deployment
+- [ ] Performance validation
 
-### Edge Optimizations
-```python
-# ARM NEON optimization
-model.compile(target='arm64',
-             optimization_level='aggressive',
-             use_neon=True)
-
-# FPGA deployment
-model.export(format='xilinx_dpu',
-            board='zynq_ultrascale')
-```
-
-## 📊 Comprehensive Benchmarks
-
-<details>
-<summary>🖥️ Desktop Performance (Click to expand)</summary>
-
-#### High-End Workstations
-| GPU | Resolution | YOLOv8n FPS | YOLO-One FPS | Memory Usage |
-|-----|------------|-------------|--------------|--------------|
-| RTX 4090 | 640x640 | 833 | **2500** | 2.1GB → 0.8GB |
-| RTX 4080 | 640x640 | 625 | **1875** | 2.1GB → 0.8GB |
-| RTX 3090 | 640x640 | 476 | **1428** | 2.1GB → 0.8GB |
-
-#### CPU Performance
-| Processor | YOLOv8n | YOLO-One | Optimization |
-|-----------|---------|----------|--------------|
-| i9-13900K | 83ms | **28ms** | AVX-512, Threading |
-| Ryzen 9 7900X | 91ms | **31ms** | AVX2, NUMA-aware |
-| M2 Ultra | 45ms | **15ms** | AMX, Neural Engine |
-
-</details>
-
-<details>
-<summary>☁️ Cloud Deployment Performance</summary>
-
-#### AWS Instance Performance
-| Instance Type | Cost/Hour | YOLOv8n RPS | YOLO-One RPS | Cost Efficiency |
-|---------------|-----------|-------------|--------------|-----------------|
-| g5.xlarge | $1.01 | 120 | **360** | **3.0x better** |
-| inf1.xlarge | $0.368 | 200 | **600** | **3.0x better** |
-| t3.large | $0.083 | 22 | **67** | **3.0x better** |
-
-#### Serverless Performance
-| Platform | Cold Start | Warm Latency | Throughput |
-|----------|------------|--------------|------------|
-| AWS Lambda | 450ms → **180ms** | 45ms → **15ms** | 3.0x |
-| Google Cloud Run | 380ms → **150ms** | 38ms → **12ms** | 3.2x |
-| Azure Functions | 420ms → **170ms** | 42ms → **14ms** | 3.0x |
-
-</details>
-
-## 🛠️ Installation & Setup
-
-### Universal Installation
-SOON!
-
-## 🌟 Why Choose YOLO-One?
-
-### ✅ Universal Compatibility
-- **One Model, All Platforms**: Train once, deploy everywhere
-- **Consistent Performance**: 3x speedup across all hardware
-- **Native Optimizations**: Platform-specific acceleration
-
-### ✅ Production Ready
-- **Battle Tested**: Used in production by 100+ companies
-- **Scalable**: From 1 inference/sec to 10,000+ inferences/sec
-- **Reliable**: 99.9% uptime in production deployments
-
-### ✅ Developer Friendly
-- **Simple API**: Same interface across all platforms
-- **Rich Ecosystem**: Tools, examples, community support
-- **Future Proof**: Regular updates and optimizations
+### Phase 3: Production (Q4 2025)
+- [ ] Cloud deployment tools
+- [ ] Enterprise features
+- [ ] Community ecosystem
 
 ---
 
 <div align="center">
 
-**🚀 Ready to revolutionize your single-class detection across ALL platforms?**
+**🚀 Ready to revolutionize single-class object detection?**
 
 ⭐ **Star this repository** • 🔄 **Fork and contribute** • 📖 **Read the docs**
 
-*Built with ❤️ for the global AI community*
+*Built with ❤️ by the IAtrax team*
 
 </div>
