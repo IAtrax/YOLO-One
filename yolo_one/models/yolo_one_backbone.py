@@ -263,18 +263,3 @@ def create_yolo_one_backbone(model_size: str = 'nano') -> YoloOneBackbone:
     config = size_configs[model_size]
     return YoloOneBackbone(width_multiple=config['width'], 
                           depth_multiple=config['depth'])
-
-if __name__ == "__main__":
-    # Test backbone
-    backbone = create_yolo_one_backbone('nano')
-    x = torch.randn(1, 3, 640, 640)
-    features = backbone(x)
-    
-    print("YOLO-One Backbone Test:")
-    print(f"Input: {x.shape}")
-    for i, feat in enumerate(features):
-        print(f"P{i+3}: {feat.shape}")
-    
-    # Count parameters
-    total_params = sum(p.numel() for p in backbone.parameters())
-    print(f"Total parameters: {total_params:,}")

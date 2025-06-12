@@ -111,7 +111,7 @@ def test_individual_components():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     try:
-        from yolo_one.models.backbone import create_yolo_one_backbone
+        from yolo_one.models.yolo_one_backbone import create_yolo_one_backbone
         from yolo_one.models.yolo_one_neck import PAFPN
         from yolo_one.models.yolo_one_head import YoloOneDetectionHead
         
@@ -150,7 +150,7 @@ def benchmark_inference_speed():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     try:
-        model = YoloOne(num_classes=1, model_size='nano').to(device)
+        model = YoloOne(model_size='nano').to(device)
         model.eval()
         
         # Warmup

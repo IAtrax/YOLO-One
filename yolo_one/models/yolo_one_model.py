@@ -3,7 +3,7 @@ Iatrax Team - 2025 - https://iatrax.com
 
 COMPLETE YOLO-ONE MODEL ASSEMBLY
 """
-from .backbone import  create_yolo_one_backbone
+from .yolo_one_backbone import  create_yolo_one_backbone
 from .yolo_one_neck import PAFPN 
 from .yolo_one_head import YoloOneDetectionHead
 
