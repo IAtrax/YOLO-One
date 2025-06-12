@@ -10,13 +10,14 @@ from .yolo_one_head import YoloOneDetectionHead
 import torch.nn as nn
 
 class YoloOne(nn.Module):
-    def __init__(self, num_classes=1, model_size='nano'):
+    def __init__(self, model_size='nano'):
         super().__init__()
         self.backbone = create_yolo_one_backbone(model_size)
+        self.num_classes = 1
         self.neck = PAFPN(self.backbone.out_channels)
         self.head = YoloOneDetectionHead(
             self.neck.out_channels, 
-            num_classes=num_classes
+            num_classes= self.num_classes
         )
     
     def forward(self, x):
