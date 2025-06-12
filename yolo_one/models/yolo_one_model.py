@@ -13,12 +13,8 @@ class YoloOne(nn.Module):
     def __init__(self, model_size='nano'):
         super().__init__()
         self.backbone = create_yolo_one_backbone(model_size)
-        self.num_classes = 1
         self.neck = PAFPN(self.backbone.out_channels)
-        self.head = YoloOneDetectionHead(
-            self.neck.out_channels, 
-            num_classes= self.num_classes
-        )
+        self.head = YoloOneDetectionHead(in_channels= self.neck.out_channels)
     
     def forward(self, x):
         features = self.backbone(x)      # [P3, P4, P5]

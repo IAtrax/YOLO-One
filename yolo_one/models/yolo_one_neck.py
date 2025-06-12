@@ -144,38 +144,3 @@ class PAFPN(nn.Module):
         out_p5 = self.out_convs[2](bu_p5)
         
         return [out_p3, out_p4, out_p5]
-
-def create_pafpn(in_channels: List[int], out_channels: int = None) -> PAFPN:
-    """
-    Create PAFPN neck for YOLO-One
-    
-    Args:
-        in_channels: Channels from backbone [P3, P4, P5]
-        out_channels: Output channels (auto if None)
-    """
-    return PAFPN(in_channels, out_channels)
-
-if __name__ == "__main__":
-    # Test PAFPN
-    # Simulate backbone outputs
-    p3 = torch.randn(1, 128, 80, 80)   # P3: 80x80
-    p4 = torch.randn(1, 256, 40, 40)   # P4: 40x40  
-    p5 = torch.randn(1, 512, 20, 20)   # P5: 20x20
-    
-    # Create PAFPN
-    neck = create_pafpn([128, 256, 512], out_channels=256)
-    
-    # Forward pass
-    outputs = neck([p3, p4, p5])
-    
-    print("PAFPN Neck Test:")
-    print(f"Input P3: {p3.shape}")
-    print(f"Input P4: {p4.shape}")  
-    print(f"Input P5: {p5.shape}")
-    print("---")
-    for i, out in enumerate(outputs):
-        print(f"Output P{i+3}: {out.shape}")
-    
-    # Count parameters
-    total_params = sum(p.numel() for p in neck.parameters())
-    print(f"PAFPN parameters: {total_params:,}")

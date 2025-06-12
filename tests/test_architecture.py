@@ -130,7 +130,7 @@ def test_individual_components():
         print(f"✅ Neck: {[x.shape for x in neck_out]}")
         
         # Test Head
-        head = YoloOneDetectionHead(neck.out_channels, num_classes=1).to(device)
+        head = YoloOneDetectionHead(neck.out_channels).to(device)
         with torch.no_grad():
             head_out = head(neck_out)
         print(f"✅ Head: {[x.shape for x in head_out]}")
