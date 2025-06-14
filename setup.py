@@ -1,4 +1,3 @@
-# setup.py (à la racine du projet)
 from setuptools import setup, find_packages
 
 setup(
@@ -26,5 +25,7 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        
     ],
 )

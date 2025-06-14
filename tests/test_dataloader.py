@@ -5,24 +5,18 @@ Iatrax Team - 2025 - https://iatrax.com
 Comprehensive tests for YoloOneDataset and preprocessing logic
 """
 
-import os
-import sys
 import tempfile
 import shutil
+import unittest
 import torch
 import numpy as np
 import cv2
 from pathlib import Path
-from typing import Dict, List, Tuple
-
-# Add project root to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from yolo_one.data.preprocessing import (
     YoloOneDataset, 
     YoloOneDatasetAnalyzer, 
     create_yolo_one_dataset,
-    yolo_one_collate_fn
 )
 
 class YoloOneDatasetTester:
@@ -50,7 +44,7 @@ class YoloOneDatasetTester:
             self.test_dataset_creation()
             self.test_dataloader_functionality()
             self.test_edge_cases()
-            
+            self.test_no_target_class_specified()
             # Print summary
             self.print_test_summary()
             
@@ -310,7 +304,36 @@ class YoloOneDatasetTester:
         except Exception as e:
             print(f"❌ Multi-class test failed: {e}")
             self.test_results['multi_class'] = False
-    
+    def test_no_target_class_specified(self):
+        """Test interactive behavior (with mock to avoid blocking)"""
+
+        print(f"\n🧪 Test: Interactive Behavior")
+        print("-" * 40)
+        
+        dataset_path = self.temp_dir / "multi_class_dataset"
+        
+        try:
+            # Ne pas mocker la méthode _get_user_input
+            # mais plutôt laisser la boucle de sélection se terminer normalement
+            with unittest.mock.patch('builtins.input', side_effect=['1', '2', '3']):
+                dataset, loader = create_yolo_one_dataset(
+                    root_dir=str(dataset_path),
+                    split='train'
+                )
+                
+                expected_class = 1
+                actual_class = dataset.target_class
+                
+                print(f"  Choice '1' → Class {actual_class}")
+                assert actual_class == expected_class, f"Expected {expected_class}, got {actual_class}"
+            
+            print("✅ All interactive choices work correctly")
+            self.test_results['interactive'] = True
+            
+        except Exception as e:
+            print(f"❌ Interactive test failed: {e}")
+            print("ℹ️  This might mean no interactive selection is implemented")
+            self.test_results['interactive'] = False
     def test_analyzer_functionality(self):
         """Test analyzer functionality in detail"""
         

@@ -198,18 +198,20 @@ class YoloOneBackbone(nn.Module):
         # Stem
         x = self.stem(x)
         
-        # Multi-scale feature extraction
+        # Stage 1: 320x320 -> 160x160
         x = self.stage1(x)
         
-        x = self.stage2(x)
-        p3 = x  # 80x80 features
+        # Stage 2: 160x160 -> 80x80
+        stage2_out = self.stage2(x)
+        p3 = stage2_out  
         
-        x = self.stage3(x)
-        p4 = x  # 40x40 features
+        # Stage 3: 80x80 -> 40x40
+        stage3_out = self.stage3(stage2_out)
+        p4 = stage3_out  
         
-        x = self.stage4(x)
-        x = self.spatial_attention(x)
-        p5 = x  # 20x20 features
+        # Stage 4: 40x40 -> 20x20
+        stage4_out = self.stage4(stage3_out)
+        p5 = self.spatial_attention(stage4_out) 
         
         return [p3, p4, p5]
     

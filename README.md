@@ -67,11 +67,13 @@ Mobile:     TBD                 # Core ML / TFLite
 - **ARM Optimization**: Native support planned
 
 ### 🖥️ Desktop & Workstation  
+
 - **Windows**: ✅ PyTorch ready, TensorRT planned
 - **Linux**: ✅ PyTorch ready, CUDA optimization
 - **macOS**: ✅ PyTorch ready, Metal planned
 
 ### ☁️ Cloud & Production
+
 - **Docker**: Container-ready architecture
 - **ONNX**: Export capability implemented
 - **TensorRT**: High-priority optimization
@@ -89,6 +91,7 @@ python tests/test_architecture.py
 ```
 
 ### Basic Usage
+
 ```python
 import torch
 from yolo_one.models import YoloOne
@@ -107,6 +110,7 @@ print(f"Model size: {model.count_parameters():,} parameters")
 ## 🎯 Single-Class Optimizations
 
 ### 🔧 Architecture Benefits
+
 ```python
 # Traditional YOLO (multi-class)
 output_channels = 4 + 1 + num_classes  # bbox + conf + classes
@@ -118,6 +122,7 @@ output_channels = 4 + 1  # bbox + fused_confidence
 ```
 
 ### ⚡ Performance Optimizations
+
 - **No class probability computation** (always 1 class)
 - **Simplified NMS** (no per-class separation)
 - **Fused confidence** (objectness + class probability)
@@ -180,8 +185,8 @@ Total:     485K params         # Ultra-lightweight
 ### Memory Efficiency
 ```python
 # Multi-resolution memory usage
-320x320: ~200MB GPU memory
-640x640: ~400MB GPU memory  
+320x320: ~7MB GPU memory
+640x640: ~11B GPU memory  
 # Scales efficiently with resolution
 ```
 

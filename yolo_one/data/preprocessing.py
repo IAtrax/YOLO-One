@@ -147,73 +147,78 @@ class YoloOneDatasetAnalyzer:
     
     def _interactive_class_selection(self, class_list: List[int], classes: Dict[int, int]) -> int:
         """
-        Interactive class selection for multiple classes
+        Sélection interactive de la classe pour plusieurs classes
         
         Args:
-            class_list: List of available class IDs
-            classes: Class count dictionary
+            class_list: Liste des identifiants de classe disponibles
+            classes: Dictionnaire des comptes de classe
             
         Returns:
-            User-selected class ID
+            Identifiant de classe sélectionné par l'utilisateur
         """
         
         print(f"\n🎯 MULTIPLE CLASSES DETECTED - SELECTION REQUIRED")
         print("=" * 55)
-        print("💡 YOLO-One is optimized for single-class detection")
-        print("   Select which class you want to train on:")
+        print("💡 YOLO-One est optimisé pour la détection de classe unique")
+        print("   Sélectionnez la classe que vous souhaitez utiliser pour l'entraînement :")
         print()
         
-        # Display options with numbers
-        for i, class_id in enumerate(class_list, 1):
+        # Trie la liste des classes pour une affichage cohérent
+        sorted_class_list = sorted(class_list)
+        
+        # Affiche les options avec des numéros
+        for i, class_id in enumerate(sorted_class_list, 1):
             count = classes[class_id]
             percentage = (count / self.analysis_results['total_annotations']) * 100
-            print(f"   {i}. Class {class_id} → {count:,} annotations ({percentage:.1f}%)")
+            print(f"   {i}. Classe {class_id} → {count:,} annotations ({percentage:.1f}%)")
         
-        print(f"\n📝 Enter your choice:")
-        print(f"   • Option number (1-{len(class_list)})")
-        print(f"   • Or class ID directly ({', '.join(map(str, class_list))})")
+        print(f"\n📝 Entrez votre choix :")
+        print(f"   • Option de menu (1-{len(sorted_class_list)})")
+        print(f"   • Identifiant de classe direct (c0, c1, c2)")
         
-        # Selection loop
+        # Boucle de sélection
         while True:
             try:
-                user_input = input(f"\n>>> Your choice: ").strip()
+                user_input = self._get_user_input()
                 
                 if not user_input:
-                    print("❌ Please enter a value")
+                    print("❌ Veuillez entrer une valeur")
                     continue
                 
-                choice = int(user_input)
+                # Gère l'identifiant de classe direct avec le préfixe 'c'
+                if user_input.startswith('c'):
+                    try:
+                        class_id = int(user_input[1:])
+                        if class_id in sorted_class_list:
+                            selected_class = class_id
+                            print(f"🎯 Identifiant de classe direct c{class_id} sélectionné → Classe {selected_class}")
+                            return selected_class
+                        else:
+                            print(f"❌ Classe {class_id} non disponible ! Utilisez : {[f'c{c}' for c in sorted_class_list]}")
+                    except ValueError:
+                        print("❌ Entrée invalide. Veuillez entrer un nombre.")
+                        continue
                 
-                # Check if it's an option number (1-N)
-                if 1 <= choice <= len(class_list):
-                    selected_class = class_list[choice - 1]
-                    break
-                
-                # Check if it's a direct class ID
-                elif choice in class_list:
-                    selected_class = choice
-                    break
-                
-                else:
-                    print(f"❌ Invalid choice! Use 1-{len(class_list)} or class IDs: {class_list}")
+                # Gère l'option de menu
+                try:
+                    choice = int(user_input)
+                    if 1 <= choice <= len(sorted_class_list):
+                        selected_class = sorted_class_list[choice - 1]
+                        print(f"🎯 Option {choice} sélectionnée → Classe {selected_class}")
+                        return selected_class
+                    else:
+                        print(f"❌ Option {choice} non disponible. Veuillez entrer un nombre entre 1 et {len(sorted_class_list)}.")
+                except ValueError:
+                    print("❌ Entrée invalide. Veuillez entrer un nombre.")
                     continue
-                    
-            except ValueError:
-                print("❌ Please enter a valid number")
+            
+            except Exception as e:
+                print(f"Erreur lors de la lecture de l'entrée de l'utilisateur : {e}")
                 continue
-            except KeyboardInterrupt:
-                print("\n❌ Selection cancelled by user")
-                raise SystemExit("Dataset preparation cancelled")
-        
-        # Confirm selection
-        count = classes[selected_class]
-        percentage = (count / self.analysis_results['total_annotations']) * 100
-        print(f"\n✅ SELECTED CLASS: {selected_class}")
-        print(f"📊 {count:,} annotations ({percentage:.1f}% of dataset)")
-        print("🚀 Ready for YOLO-One training!")
-        
-        return selected_class
 
+    def _get_user_input(self):
+        # Cette méthode peut être mockée dans les tests pour éviter de bloquer l'exécution
+        return input(">>> Votre choix : ")
 class YoloOneDataset(Dataset):
     """
     YOLO-One Dataset 

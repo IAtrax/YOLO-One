@@ -3,15 +3,7 @@ YOLO-One Architecture Forward Pass Test
 Iatrax Team - 2025 - https://iatrax.com
 """
 
-import sys
-import os
-
-# Add root directory to path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
-
 import torch
-import torch.nn as nn
 from yolo_one.models.yolo_one_model import YoloOne
 
 def test_yolo_one_forward():
@@ -26,12 +18,12 @@ def test_yolo_one_forward():
     
     # Model instantiation
     print("\n📦 Creating model...")
-    model = YoloOne(model_size='nano')
+    model = YoloOne(model_size='large')
     model = model.to(device)
     model.eval()
     
     # Random input (batch_size=2 for testing)
-    batch_size = 2
+    batch_size = 1
     channels = 3
     height = 640
     width = 640
@@ -49,7 +41,6 @@ def test_yolo_one_forward():
             outputs = model(random_input)
         
         print("✅ Forward pass successful!")
-        print("outputs:", outputs)
         print('outputs[0].shape:', outputs[0].shape)
         # Output analysis
         print(f"\n📊 Output analysis:")
@@ -150,7 +141,7 @@ def benchmark_inference_speed():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     try:
-        model = YoloOne(model_size='nano').to(device)
+        model = YoloOne(model_size='large').to(device)
         model.eval()
         
         # Warmup
