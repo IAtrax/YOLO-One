@@ -18,6 +18,7 @@ import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
+import argparse
 import warnings
 from tqdm import tqdm # Import tqdm for progress bars
 
@@ -26,7 +27,7 @@ warnings.filterwarnings('ignore')
 # YOLO-One imports
 from yolo_one.models.yolo_one_model import YoloOne
 from yolo_one.losses import create_yolo_one_loss
-from yolo_one.metrics import create_yolo_one_metrics
+from yolo_one.metrics import create_yolo_one_metrics, SimpleYoloOneMetrics
 from yolo_one.optimizer import create_yolo_one_optimizer
 from yolo_one.configs.config import create_yolo_one_config, YoloOneConfig
 from yolo_one.data.preprocessing import create_yolo_one_dataset
@@ -179,14 +180,16 @@ class YoloOneTrainer:
         """Create metrics evaluator"""
         
         metrics_config = self.config['metrics']
-        
+        """
         metrics = create_yolo_one_metrics(
             iou_thresholds=metrics_config.get('iou_thresholds'),
             confidence_threshold=metrics_config.get('confidence_threshold', 0.25),
             nms_threshold=metrics_config.get('nms_threshold', 0.45),
             max_detections=metrics_config.get('max_detections', 300),
-            device=str(self.device)
+            device=str(self.device) # Pass the device string to metrics for its internal use
         )
+        """
+        metrics = SimpleYoloOneMetrics()
         
         return metrics
     
@@ -263,17 +266,6 @@ class YoloOneTrainer:
             if self.patience_counter >= patience:
                 self.logger.info(f"Early stopping triggered after {patience} epochs without improvement")
                 break
-            
-            # Print epoch summary
-            epoch_time = time.time() - start_time
-            # TQDM takes care of epoch progress, only log summary
-            # self.logger.info(
-            #     f"Epoch [{epoch+1}/{total_epochs}] - "
-            #     f"Train Loss: {train_metrics.get('total_loss', 0):.4f} - "
-            #     f"Val mAP: {val_metrics.get('mAP', 0):.4f} - "
-            #     f"LR: {current_lr:.6f} - "
-            #     f"Time: {epoch_time:.2f}s"
-            # )
             
             start_time = time.time()
         
@@ -365,7 +357,6 @@ class YoloOneTrainer:
             )
 
             # Log to tensorboard (optional, can be moved to epoch end for cleaner logs)
-            # if batch_idx % 100 == 0: # Kept for detailed batch logging
             self.writer.add_scalar('batch/total_loss', loss_dict['total_loss'].item(), self.global_step)
             self.writer.add_scalar('batch/box_loss', loss_dict['box_loss'].item(), self.global_step)
             self.writer.add_scalar('batch/obj_loss', loss_dict['obj_loss'].item(), self.global_step)
@@ -411,15 +402,22 @@ class YoloOneTrainer:
                 # Forward pass
                 inference_start = time.time()
                 with autocast(enabled=self.use_mixed_precision):
-                    predictions = model_to_eval(images)
-                    loss_dict = self.criterion(predictions, targets, model_to_eval)
+                    predictions_raw = model_to_eval(images) # Raw predictions from model
+                    loss_dict = self.criterion(predictions_raw, targets, model_to_eval)
                 
                 inference_time = time.time() - inference_start
+                predictions_for_metrics = {}
+                for key, val_list in predictions_raw.items():
+                    predictions_for_metrics[key] = [v.cpu() for v in val_list]
                 
+                # If targets are also needed on CPU for metrics (which they are, per metrics.py)
+                targets_for_metrics = targets.cpu()
+
+
                 # Update metrics
                 self.metrics.update(
-                    predictions=predictions,
-                    targets=targets,
+                    predictions=predictions_for_metrics, # Pass CPU predictions
+                    targets=targets_for_metrics, # Pass CPU targets
                     inference_time=inference_time / len(images)  # Per image
                 )
                 
@@ -516,8 +514,6 @@ class YoloOneTrainer:
 
 def main():
     """Main training function"""
-    
-    import argparse
     
     parser = argparse.ArgumentParser(description='YOLO-One Training')
     parser.add_argument('--config', type=str, default='configs/yolo_one_nano.yaml',
