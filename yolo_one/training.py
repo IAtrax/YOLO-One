@@ -27,13 +27,14 @@ warnings.filterwarnings('ignore')
 # YOLO-One imports
 from yolo_one.models.yolo_one_model import YoloOne
 from yolo_one.losses import create_yolo_one_loss
-from yolo_one.metrics import create_yolo_one_metrics, SimpleYoloOneMetrics
+# Import the comprehensive metrics creator
+from yolo_one.metrics import SimpleYoloOneMetrics
 from yolo_one.optimizer import create_yolo_one_optimizer
 from yolo_one.configs.config import create_yolo_one_config, YoloOneConfig
 from yolo_one.data.preprocessing import create_yolo_one_dataset
 from yolo_one.utils.general import EMAModel
 from yolo_one.utils.general import (
-    setup_logging, save_checkpoint, load_checkpoint,
+    setup_logging, save_checkpoint, load_checkpoint, # We'll modify save_checkpoint internally
     get_device, set_random_seed, count_parameters
 )
 
@@ -94,7 +95,7 @@ class YoloOneTrainer:
         # Initialize optimizer and scheduler
         self.optimizer, self.scheduler = self._create_optimizer()
         
-        # Initialize metrics
+        # Initialize metrics (using the comprehensive YoloOneMetrics)
         self.metrics = self._create_metrics()
         
         # Initialize EMA if enabled
@@ -180,16 +181,10 @@ class YoloOneTrainer:
         """Create metrics evaluator"""
         
         metrics_config = self.config['metrics']
-        """
-        metrics = create_yolo_one_metrics(
-            iou_thresholds=metrics_config.get('iou_thresholds'),
-            confidence_threshold=metrics_config.get('confidence_threshold', 0.25),
-            nms_threshold=metrics_config.get('nms_threshold', 0.45),
-            max_detections=metrics_config.get('max_detections', 300),
-            device=str(self.device) # Pass the device string to metrics for its internal use
-        )
-        """
-        metrics = SimpleYoloOneMetrics()
+        
+
+        metrics = SimpleYoloOneMetrics(device=self.device)
+        
         
         return metrics
     
@@ -233,7 +228,8 @@ class YoloOneTrainer:
                 if current_map > self.best_map:
                     self.best_map = current_map
                     self.patience_counter = 0
-                    self._save_checkpoint(is_best=True)
+                    # Save only model state_dict for best model to reduce size
+                    self._save_checkpoint(is_best=True, only_model_state=True) 
                     self.logger.info(f"New best mAP: {self.best_map:.4f}")
                 else:
                     self.patience_counter += val_interval
@@ -257,9 +253,9 @@ class YoloOneTrainer:
             current_lr = self.optimizer.param_groups[0]['lr']
             self.writer.add_scalar('lr/learning_rate', current_lr, epoch)
             
-            # Save regular checkpoint
+            # Save regular checkpoint (full state for resumption)
             if (epoch + 1) % 50 == 0:
-                self._save_checkpoint(is_best=False)
+                self._save_checkpoint(is_best=False, only_model_state=False)
             
             # Early stopping check
             patience = self.config['validation'].get('patience', 50)
@@ -269,9 +265,9 @@ class YoloOneTrainer:
             
             start_time = time.time()
         
-        # Final validation and save
+        # Final validation and save (only model state_dict)
         final_metrics = self._validate_epoch()
-        self._save_checkpoint(is_best=False, filename='final_model.pt')
+        self._save_checkpoint(is_best=False, filename='final_model.pt', only_model_state=True)
         
         total_time = time.time() - start_time
         self.logger.info(f"Training completed in {total_time:.2f}s")
@@ -302,9 +298,9 @@ class YoloOneTrainer:
         train_bar = tqdm(self.train_dataloader, desc=f"Epoch {self.current_epoch+1} Training", leave=False)
         for batch_idx, batch in enumerate(train_bar):
             
-            # Move data to device
-            images = batch['images'].to(self.device)
-            targets = batch['targets'].to(self.device)
+            # Move data to device (images and targets are already tensors from DataLoader)
+            images = batch['images'].to(self.device, non_blocking=True) # non_blocking for faster transfer
+            targets = batch['targets'].to(self.device, non_blocking=True) # non_blocking for faster transfer
             
             # Forward pass with mixed precision
             with autocast(enabled=self.use_mixed_precision):
@@ -356,7 +352,7 @@ class YoloOneTrainer:
                 lr=f"{current_lr:.6f}"
             )
 
-            # Log to tensorboard (optional, can be moved to epoch end for cleaner logs)
+            # Log to tensorboard 
             self.writer.add_scalar('batch/total_loss', loss_dict['total_loss'].item(), self.global_step)
             self.writer.add_scalar('batch/box_loss', loss_dict['box_loss'].item(), self.global_step)
             self.writer.add_scalar('batch/obj_loss', loss_dict['obj_loss'].item(), self.global_step)
@@ -395,22 +391,34 @@ class YoloOneTrainer:
         with torch.no_grad():
             for batch_idx, batch in enumerate(val_bar):
                 
-                # Move data to device
-                images = batch['images'].to(self.device)
-                targets = batch['targets'].to(self.device)
+                # Move data to device (images and targets are already tensors from DataLoader)
+                images = batch['images'].to(self.device, non_blocking=True) # non_blocking for faster transfer
+                targets = batch['targets'].to(self.device, non_blocking=True) # non_blocking for faster transfer
                 
                 # Forward pass
                 inference_start = time.time()
                 with autocast(enabled=self.use_mixed_precision):
-                    predictions_raw = model_to_eval(images) # Raw predictions from model
+                    predictions_raw = model_to_eval(images) # Raw predictions from model (on GPU)
                     loss_dict = self.criterion(predictions_raw, targets, model_to_eval)
                 
                 inference_time = time.time() - inference_start
-                predictions_for_metrics = {}
-                for key, val_list in predictions_raw.items():
-                    predictions_for_metrics[key] = [v.cpu() for v in val_list]
                 
-                # If targets are also needed on CPU for metrics (which they are, per metrics.py)
+                # Prepare predictions for metrics (transfer to CPU before update for multiprocessing safety)
+                predictions_for_metrics = {}
+                if isinstance(predictions_raw, dict): # Handle multi-head output
+                    for key, val_list in predictions_raw.items():
+                        # Ensure each tensor in the list is moved to CPU
+                        predictions_for_metrics[key] = [v.cpu() for v in val_list]
+                else: # Handle single tensor output
+                    # This case assumes predictions_raw is a single tensor or a list of single tensors
+                    # If it's a list of tensors, ensure each is moved to CPU
+                    if isinstance(predictions_raw, list):
+                        predictions_for_metrics['detections'] = [v.cpu() for v in predictions_raw]
+                    else: # A single tensor
+                        predictions_for_metrics['detections'] = [predictions_raw.cpu()]
+
+
+                # Targets are already on device; move to CPU for metrics (if not already done by DataLoader)
                 targets_for_metrics = targets.cpu()
 
 
@@ -449,36 +457,52 @@ class YoloOneTrainer:
                 f"Val Loss: {metrics.get('val_loss', 0):.4f}"
             )
     
-    def _save_checkpoint(self, is_best: bool = False, filename: Optional[str] = None):
-        """Save model checkpoint"""
+    def _save_checkpoint(self, is_best: bool = False, filename: Optional[str] = None, only_model_state: bool = False):
+        """
+        Save model checkpoint.
+        
+        Args:
+            is_best (bool): True if this is the best model so far.
+            filename (Optional[str]): Custom filename for the checkpoint.
+            only_model_state (bool): If True, only saves the model's state_dict
+                                     (and EMA model's state_dict if applicable),
+                                     resulting in a smaller file for deployment.
+        """
         
         if filename is None:
             filename = f'checkpoint_epoch_{self.current_epoch+1}.pt'
         
-        checkpoint = {
-            'epoch': self.current_epoch + 1,
-            'global_step': self.global_step,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
-            'scaler_state_dict': self.scaler.state_dict() if self.scaler else None,
-            'ema_state_dict': self.ema_model.state_dict() if self.ema_model else None,
-            'best_map': self.best_map,
-            'config': self.config,
-            'model_parameters': count_parameters(self.model)
-        }
+        if only_model_state:
+            # For final or best model, save only model's state_dict (or EMA's)
+            model_to_save = self.ema_model.ema if self.ema_model else self.model
+            # Ensure model is on CPU before saving if it's for general deployment
+            # Otherwise, keep on GPU if it's for GPU-only inference
+            torch.save(model_to_save.state_dict(), self.run_dir / filename)
+            self.logger.info(f"Lightweight model state saved: {self.run_dir / filename}")
+        else:
+            # For regular checkpoints, save full state for resuming training
+            checkpoint = {
+                'epoch': self.current_epoch + 1,
+                'global_step': self.global_step,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+                'scaler_state_dict': self.scaler.state_dict() if self.scaler else None,
+                'ema_state_dict': self.ema_model.state_dict() if self.ema_model else None,
+                'best_map': self.best_map,
+                'config': self.config,
+                'model_parameters': count_parameters(self.model)
+            }
+            checkpoint_path = self.run_dir / filename
+            torch.save(checkpoint, checkpoint_path)
+            self.logger.info(f"Full checkpoint saved: {checkpoint_path}")
         
-        # Save checkpoint
-        checkpoint_path = self.run_dir / filename
-        torch.save(checkpoint, checkpoint_path)
-        
-        # Save best model
+        # Always save best_model.pt as a lightweight model state
         if is_best:
             best_path = self.run_dir / 'best_model.pt'
-            torch.save(checkpoint, best_path)
-            self.logger.info(f"Best model saved: {best_path}")
-        
-        self.logger.info(f"Checkpoint saved: {checkpoint_path}")
+            model_to_save = self.ema_model.ema if self.ema_model else self.model
+            torch.save(model_to_save.state_dict(), best_path)
+            self.logger.info(f"Best model state (lightweight) saved: {best_path}")
     
     def _load_checkpoint(self, checkpoint_path: str):
         """Load checkpoint and resume training"""
@@ -562,21 +586,22 @@ def main():
     root_dir = Path(args.data)
     
     # Create data loaders
+    # Added pin_memory=True for faster GPU transfers
     _, train_dataloader = create_yolo_one_dataset(
         root_dir=root_dir,
         split='train',
         batch_size=config['training']['batch_size'],
-        img_size=(config['model']['input_size'], config['model']['input_size']),
+        img_size=(config['model']['input_size'], config['model']['input_size'] ),
         augmentations=config['augmentation'],
-        num_workers=args.workers,
+        num_workers=args.workers,   
     )
-    
     _, val_dataloader = create_yolo_one_dataset(
         root_dir=root_dir,
         split='val',
         batch_size=config['training']['batch_size'],
         img_size=(config['model']['input_size'], config['model']['input_size']),
         num_workers=args.workers,
+       
     )
     
     # Create trainer
@@ -598,7 +623,8 @@ def main():
         
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
-        trainer._save_checkpoint(is_best=False, filename='interrupted_model.pt')
+        # Save interrupted model as lightweight state
+        trainer._save_checkpoint(is_best=False, filename='interrupted_model.pt', only_model_state=True) 
         
     except Exception as e:
         print(f"\nTraining failed with error: {e}")
