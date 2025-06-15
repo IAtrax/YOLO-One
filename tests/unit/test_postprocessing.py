@@ -2,12 +2,6 @@
 Test YOLO-One Post-Processing
 Iatrax Team - 2025 - https://iatrax.com
 """
-
-import sys
-import os
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
-
 import torch
 from yolo_one.models.yolo_one_model import YoloOne
 from yolo_one.data.postprocessing import postprocess_yolo_one_outputs

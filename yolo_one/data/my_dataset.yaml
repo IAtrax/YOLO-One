@@ -1,0 +1,10 @@
+train: /path/to/train/images
+val: /path/to/val/images
+test: /path/to/test/images
+
+# Class names (single class for YOLO-One)
+names:
+  0: my_object
+
+# Dataset info
+nc: 1  # number of classes

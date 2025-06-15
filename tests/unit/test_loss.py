@@ -1,4 +1,8 @@
 """
+IATrax - YOLO-One
+
+MIT License
+
 Test suite for YOLO-One Loss Function
 Tests loss computation, gradient flow, and edge cases
 """
@@ -6,11 +10,7 @@ Tests loss computation, gradient flow, and edge cases
 import torch
 import torch.nn as nn
 import pytest
-import numpy as np
-from typing import List, Dict, Tuple
-import sys
-import os
-
+from typing import List, Dict
 
 from yolo_one.losses import YoloOneLoss, create_yolo_one_loss
 

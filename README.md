@@ -190,6 +190,40 @@ Total:     485K params         # Ultra-lightweight
 # Scales efficiently with resolution
 ```
 
+## Training Pipeline
+
+to launch training pipeline, run the following command:
+
+```python
+python train.py \
+    --config configs/yolo_one_nano.yaml \
+    --data data/my_dataset.yaml \
+    --model-size nano \
+    --epochs 300 \
+    --batch-size 16 \
+    --device cuda
+```
+
+Train with custom parameters
+
+```python
+python train.py \
+    --data data/my_dataset.yaml \
+    --model-size small \
+    --epochs 500 \
+    --batch-size 32 \
+    --lr 0.001 \
+    --output-dir runs/experiment_1
+```
+
+Resume training
+
+```python
+python train.py \
+    --data data/my_dataset.yaml \
+    --resume runs/train_20250615_120000/best_model.pt
+```
+
 ## 🤝 Contributing
 
 We welcome contributions! Key areas:
