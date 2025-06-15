@@ -2,15 +2,13 @@
 YOLO-One Dataset Preprocessing - Single-Class Selection
 Iatrax Team - 2025 - https://iatrax.com
 
-Intelligent preprocessing: 1 class → continue, multiple classes → user selection
 """
 
-import os
 import cv2
 import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-from typing import List, Tuple, Dict, Optional, Union
+from typing import List, Tuple, Dict, Optional
 import albumentations as A
 from pathlib import Path
 from collections import Counter
@@ -159,66 +157,46 @@ class YoloOneDatasetAnalyzer:
         
         print(f"\n🎯 MULTIPLE CLASSES DETECTED - SELECTION REQUIRED")
         print("=" * 55)
-        print("💡 YOLO-One est optimisé pour la détection de classe unique")
-        print("   Sélectionnez la classe que vous souhaitez utiliser pour l'entraînement :")
-        print()
+        print("💡 YOLO-One requires one class per training set for object detection.")
+        print("    Please select a class :")
         
-        # Trie la liste des classes pour une affichage cohérent
         sorted_class_list = sorted(class_list)
-        
-        # Affiche les options avec des numéros
+        # show class list
         for i, class_id in enumerate(sorted_class_list, 1):
             count = classes[class_id]
-            percentage = (count / self.analysis_results['total_annotations']) * 100
-            print(f"   {i}. Classe {class_id} → {count:,} annotations ({percentage:.1f}%)")
         
-        print(f"\n📝 Entrez votre choix :")
-        print(f"   • Option de menu (1-{len(sorted_class_list)})")
-        print(f"   • Identifiant de classe direct (c0, c1, c2)")
+        print(f"\n📝 Enter your choice :")
+        print(f"   • Menu option (1-{len(sorted_class_list)})")
         
-        # Boucle de sélection
+        # Get user input
         while True:
             try:
                 user_input = self._get_user_input()
                 
                 if not user_input:
-                    print("❌ Veuillez entrer une valeur")
+                    print("❌ Please enter a valid option.")
                     continue
                 
-                # Gère l'identifiant de classe direct avec le préfixe 'c'
-                if user_input.startswith('c'):
-                    try:
-                        class_id = int(user_input[1:])
-                        if class_id in sorted_class_list:
-                            selected_class = class_id
-                            print(f"🎯 Identifiant de classe direct c{class_id} sélectionné → Classe {selected_class}")
-                            return selected_class
-                        else:
-                            print(f"❌ Classe {class_id} non disponible ! Utilisez : {[f'c{c}' for c in sorted_class_list]}")
-                    except ValueError:
-                        print("❌ Entrée invalide. Veuillez entrer un nombre.")
-                        continue
-                
-                # Gère l'option de menu
+                # Validate user input
                 try:
                     choice = int(user_input)
                     if 1 <= choice <= len(sorted_class_list):
                         selected_class = sorted_class_list[choice - 1]
-                        print(f"🎯 Option {choice} sélectionnée → Classe {selected_class}")
+                        print(f"🎯 Select {choice} Option → Classe {selected_class}")
                         return selected_class
                     else:
-                        print(f"❌ Option {choice} non disponible. Veuillez entrer un nombre entre 1 et {len(sorted_class_list)}.")
+                        print(f"❌ Option {choice} is not valid. Please enter a number between 1 and {len(sorted_class_list)}.")
                 except ValueError:
-                    print("❌ Entrée invalide. Veuillez entrer un nombre.")
+                    print("❌ Please enter a valid option.")
                     continue
             
             except Exception as e:
-                print(f"Erreur lors de la lecture de l'entrée de l'utilisateur : {e}")
+                print(f"❌ Error : {e}")
                 continue
 
     def _get_user_input(self):
-        # Cette méthode peut être mockée dans les tests pour éviter de bloquer l'exécution
-        return input(">>> Votre choix : ")
+        # Get user input
+        return input(">>> Enter your choice : ")
 class YoloOneDataset(Dataset):
     """
     YOLO-One Dataset 
