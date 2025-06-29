@@ -3,144 +3,100 @@ Iatrax Team - 2025 - https://iatrax.com
 
 LICENSE: MIT
 
-NECK MODULE FOR YOLO-ONE (PAFPN Implementation)
+REFACTORED NECK MODULE FOR YOLO-ONE (PAFPN Implementation)
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List
+from typing import List, Dict, Any
 
-class ConvBNAct(nn.Module):
-    """Basic convolution block with BatchNorm and activation"""
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 1, 
-                 stride: int = 1, padding: int = 0, groups: int = 1):
-        super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, 
-                             stride, padding, groups, bias=False)
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.act = nn.SiLU(inplace=True)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.act(self.bn(self.conv(x)))
+# Import reusable blocks from the backbone to ensure consistency
+from .yolo_one_backbone import Conv, CSPBlock
 
-class CSPBlock(nn.Module):
-    """CSP Block for neck feature fusion"""
-    def __init__(self, in_channels: int, out_channels: int, num_blocks: int = 1):
-        super().__init__()
-        hidden_channels = out_channels // 2
-        
-        self.conv1 = ConvBNAct(in_channels, hidden_channels, 1)
-        self.conv2 = ConvBNAct(in_channels, hidden_channels, 1)
-        
-        self.bottlenecks = nn.Sequential(*[
-            nn.Sequential(
-                ConvBNAct(hidden_channels, hidden_channels, 1),
-                ConvBNAct(hidden_channels, hidden_channels, 3, padding=1)
-            ) for _ in range(num_blocks)
-        ])
-        
-        self.conv3 = ConvBNAct(hidden_channels * 2, out_channels, 1)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x1 = self.conv1(x)
-        x2 = self.conv2(x)
-        
-        for bottleneck in self.bottlenecks:
-            x2 = x2 + bottleneck(x2)  # Residual connection
-        
-        out = torch.cat([x1, x2], dim=1)
-        return self.conv3(out)
+# --- Main Neck ---
 
 class PAFPN(nn.Module):
     """
-    Path Aggregation Feature Pyramid Network (PAFPN)
-    Optimized for YOLO-One single-class detection
-    
-    Features:
-    - Top-down pathway for semantic information
-    - Bottom-up pathway for localization information  
-    - Lateral connections for feature fusion
+    Refactored Path Aggregation Feature Pyramid Network (PAFPN).
+
+    This neck is built dynamically based on a configuration dictionary,
+    making it highly flexible and easy to experiment with.
     """
-    
-    def __init__(self, in_channels: List[int], out_channels: int = None):
+    def __init__(self, config: Dict[str, Any]):
         super().__init__()
-        
-        # Auto-determine output channels if not specified
-        if out_channels is None:
-            out_channels = in_channels[1]  # Use P4 channels as default
-        
-        self.in_channels = in_channels  # [P3, P4, P5]
-        self.out_channels = [out_channels] * 3  # [P3_out, P4_out, P5_out]
-        
-        # Lateral convolutions to normalize channel dimensions
+        self.config = config
+        in_channels = config['in_channels']
+        out_channels = config['out_channels']
+
+        # Lateral convolutions to unify channel dimensions
         self.lateral_convs = nn.ModuleList([
-            ConvBNAct(ch, out_channels, 1) for ch in in_channels
+            Conv(in_ch, out_ch, kernel_size=1) for in_ch, out_ch in zip(in_channels, out_channels)
         ])
-        
-        # Top-down pathway
-        self.td_convs = nn.ModuleList([
-            CSPBlock(out_channels, out_channels, num_blocks=1),
-            CSPBlock(out_channels, out_channels, num_blocks=1)
+
+        # Top-down pathway (from P5 to P3)
+        self.top_down_blocks = nn.ModuleList([
+            CSPBlock(out_channels[1] + out_channels[2], out_channels[1], num_blocks=config['num_blocks']),
+            CSPBlock(out_channels[0] + out_channels[1], out_channels[0], num_blocks=config['num_blocks'])
         ])
-        
-        # Bottom-up pathway  
-        self.bu_convs = nn.ModuleList([
-            CSPBlock(out_channels, out_channels, num_blocks=1),
-            CSPBlock(out_channels, out_channels, num_blocks=1)
-        ])
-        
-        # Downsampling for bottom-up pathway
+
+        # Bottom-up pathway (from P3 to P5)
         self.downsample_convs = nn.ModuleList([
-            ConvBNAct(out_channels, out_channels, 3, stride=2, padding=1),
-            ConvBNAct(out_channels, out_channels, 3, stride=2, padding=1)
+            Conv(out_channels[0], out_channels[0], kernel_size=3, stride=2),
+            Conv(out_channels[1], out_channels[1], kernel_size=3, stride=2)
         ])
-        
-        # Final output convolutions
-        self.out_convs = nn.ModuleList([
-            CSPBlock(out_channels, out_channels, num_blocks=1) for _ in range(3)
+        self.bottom_up_blocks = nn.ModuleList([
+            CSPBlock(out_channels[0] + out_channels[1], out_channels[1], num_blocks=config['num_blocks']),
+            CSPBlock(out_channels[1] + out_channels[2], out_channels[2], num_blocks=config['num_blocks'])
         ])
-    
+
+        # Store final output channels for the head
+        self.out_channels = out_channels
+
     def forward(self, inputs: List[torch.Tensor]) -> List[torch.Tensor]:
-        """
-        Forward pass of PAFPN
-        
-        Args:
-            inputs: List of feature maps [P3, P4, P5] from backbone
-            
-        Returns:
-            List of enhanced feature maps [P3_out, P4_out, P5_out]
-        """
-        # inputs: [P3, P4, P5]
+        # inputs are [P3, P4, P5] from the backbone
         p3, p4, p5 = inputs
-        
-        # Lateral connections - normalize channels
-        lat_p3 = self.lateral_convs[0](p3)  # P3 lateral
-        lat_p4 = self.lateral_convs[1](p4)  # P4 lateral  
-        lat_p5 = self.lateral_convs[2](p5)  # P5 lateral
-        
-        # Top-down pathway (high-level semantic info)
-        # P5 -> P4
-        td_p4 = lat_p4 + F.interpolate(lat_p5, size=lat_p4.shape[2:], 
-                                       mode='nearest')
-        td_p4 = self.td_convs[0](td_p4)
-        
-        # P4 -> P3  
-        td_p3 = lat_p3 + F.interpolate(td_p4, size=lat_p3.shape[2:], 
-                                       mode='nearest')
-        td_p3 = self.td_convs[1](td_p3)
-        
-        # Bottom-up pathway (low-level localization info)
-        # P3 -> P4
-        bu_p4 = td_p4 + self.downsample_convs[0](td_p3)
-        bu_p4 = self.bu_convs[0](bu_p4)
-        
-        # P4 -> P5
-        bu_p5 = lat_p5 + self.downsample_convs[1](bu_p4)
-        bu_p5 = self.bu_convs[1](bu_p5)
-        
-        # Final outputs
-        out_p3 = self.out_convs[0](td_p3)
-        out_p4 = self.out_convs[1](bu_p4)  
-        out_p5 = self.out_convs[2](bu_p5)
-        
-        return [out_p3, out_p4, out_p5]
+
+        # Apply lateral convolutions
+        lat_p3 = self.lateral_convs[0](p3)
+        lat_p4 = self.lateral_convs[1](p4)
+        lat_p5 = self.lateral_convs[2](p5)
+
+        # Top-down pathway
+        td_p4 = self.top_down_blocks[0](torch.cat([F.interpolate(lat_p5, size=lat_p4.shape[2:], mode='nearest'), lat_p4], 1))
+        td_p3 = self.top_down_blocks[1](torch.cat([F.interpolate(td_p4, size=lat_p3.shape[2:], mode='nearest'), lat_p3], 1))
+
+        # Bottom-up pathway
+        bu_p4 = self.bottom_up_blocks[0](torch.cat([self.downsample_convs[0](td_p3), td_p4], 1))
+        bu_p5 = self.bottom_up_blocks[1](torch.cat([self.downsample_convs[1](bu_p4), lat_p5], 1))
+
+        return [td_p3, bu_p4, bu_p5]
+
+# --- Factory Function ---
+
+def create_yolo_one_neck(model_size: str, in_channels: List[int]) -> PAFPN:
+    """
+    Factory function to create a YOLO-One neck of a specific size.
+    """
+    size_multipliers = {
+        'nano':   {'width': 0.25, 'depth': 0.33},
+        'small':  {'width': 0.50, 'depth': 0.33},
+        'medium': {'width': 0.75, 'depth': 0.67},
+        'large':  {'width': 1.00, 'depth': 1.00},
+    }
+    if model_size not in size_multipliers:
+        raise ValueError(f"Model size '{model_size}' not supported.")
+
+    w = size_multipliers[model_size]['width']
+    d = size_multipliers[model_size]['depth']
+
+    # All feature maps from the neck will have the same number of channels
+    # We use the second backbone channel as the base
+    neck_channels = int(in_channels[1] * w)
+
+    config = {
+        'in_channels': in_channels,
+        'out_channels': [neck_channels] * len(in_channels),
+        'num_blocks': max(1, round(2 * d)),
+    }
+
+    return PAFPN(config)
