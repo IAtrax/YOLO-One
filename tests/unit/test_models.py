@@ -18,7 +18,7 @@ def test_yolo_one_forward():
     
     # Model instantiation
     print("\n📦 Creating model...")
-    model = YoloOne(model_size='large')
+    model = YoloOne(model_size='nano')
     model = model.to(device)
     model.eval()
     
@@ -41,18 +41,23 @@ def test_yolo_one_forward():
             outputs = model(random_input)
         
         print("✅ Forward pass successful!")
-        print('outputs[0].shape:', outputs[0].shape)
+        
         # Output analysis
         print(f"\n📊 Output analysis:")
         print(f"Number of scales: {len(outputs)}")
         
-        for i, output in enumerate(outputs):
-            scale_name = ['P3', 'P4', 'P5'][i]
-            print(f"{scale_name}: {output.shape}")
+        for i, (scale_name, output) in enumerate(outputs.items()):
+            print(f"{scale_name}: {output[0].shape}")
             
             # Channel verification
-            expected_channels = 6  # 1 class + 4 bbox + 1 conf
-            actual_channels = output.shape[1]
+            if scale_name == 'detections':
+                expected_channels = 5  # x, y, w, h, conf
+            elif scale_name in ['aspects', 'shape_confidences']:
+                expected_channels = 1
+            else:
+                expected_channels = -1 # Should not happen
+            
+            actual_channels = output[0].shape[1]
             
             if actual_channels == expected_channels:
                 print(f"  ✅ Channels correct: {actual_channels}")
@@ -115,16 +120,16 @@ def test_individual_components():
         print(f"✅ Backbone: {[x.shape for x in backbone_out]}")
         
         # Test Neck
-        neck = PAFPN(backbone.out_channels).to(device)
+        neck = PAFPN(config={'in_channels': backbone.out_channels, 'out_channels': backbone.out_channels, 'num_blocks': 1}).to(device)
         with torch.no_grad():
             neck_out = neck(backbone_out)
         print(f"✅ Neck: {[x.shape for x in neck_out]}")
         
         # Test Head
-        head = YoloOneDetectionHead(neck.out_channels).to(device)
+        head = YoloOneDetectionHead(config={'in_channels': neck.out_channels}).to(device)
         with torch.no_grad():
             head_out = head(neck_out)
-        print(f"✅ Head: {[x.shape for x in head_out]}")
+        print(f"✅ Head: {{k: [v[0].shape for v in val] for k, val in head_out.items()}}")
         
         return True
         
@@ -141,7 +146,7 @@ def benchmark_inference_speed():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     try:
-        model = YoloOne(model_size='large').to(device)
+        model = YoloOne(model_size='nano').to(device)
         model.eval()
         
         # Warmup
