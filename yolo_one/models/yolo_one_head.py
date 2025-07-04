@@ -29,19 +29,40 @@ class YoloOneDetectionHead(nn.Module):
 
         # Create the detection heads for each feature map level
         self.detection_heads = nn.ModuleList()
+        self.aspect_heads = nn.ModuleList()
+        self.shape_conf_heads = nn.ModuleList()
+
         for in_ch in in_channels:
-            head = nn.Sequential(
+            # Detection head
+            self.detection_heads.append(nn.Sequential(
                 Conv(in_ch, in_ch, kernel_size=3),
                 nn.Conv2d(in_ch, self.num_outputs, 1)
-            )
-            self.detection_heads.append(head)
+            ))
+            # Aspect head
+            self.aspect_heads.append(nn.Sequential(
+                Conv(in_ch, in_ch, kernel_size=3),
+                nn.Conv2d(in_ch, 1, 1)
+            ))
+            # Shape confidence head
+            self.shape_conf_heads.append(nn.Sequential(
+                Conv(in_ch, in_ch, kernel_size=3),
+                nn.Conv2d(in_ch, 1, 1)
+            ))
 
-    def forward(self, x: List[torch.Tensor]) -> List[torch.Tensor]:
-        """The forward pass now returns a list of detection tensors."""
+    def forward(self, x: List[torch.Tensor]) -> Dict[str, List[torch.Tensor]]:
+        """The forward pass now returns a dictionary of output tensors."""
         detections = []
+        aspects = []
+        shape_confidences = []
         for i, feat in enumerate(x):
             detections.append(self.detection_heads[i](feat))
-        return detections
+            aspects.append(self.aspect_heads[i](feat))
+            shape_confidences.append(self.shape_conf_heads[i](feat))
+        return {
+            'detections': detections,
+            'aspects': aspects,
+            'shape_confidences': shape_confidences
+        }
 
 # --- Factory Function ---
 
