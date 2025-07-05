@@ -53,9 +53,9 @@ Memory Format:  Float32 (FP16/INT8 planned)  💾 Further optimization ready
 ```python
 # Performance Projection Pipeline
 Current:    140 FPS   # PyTorch Float32
-Step 1:     250+ FPS (~4ms)     # + torch.compile
+Step 1:     250+ FPS      # + torch.compile
 Step 2:     350+ FPS   # + TensorRT
-Step 3:     500+ FPS     # + FP16 precision
+Step 3:     600+ FPS     # + FP16 precision
 Mobile:     TBD                 # Core ML / TFLite
 ```
 
