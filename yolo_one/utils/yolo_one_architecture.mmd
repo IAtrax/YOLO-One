@@ -1,0 +1,69 @@
+graph TD
+    subgraph YOLO-One Model
+        A[Input Image] --> B(YoloOneBackbone)
+        B -- P3, P4, P5 Features --> C(PAFPN Neck)
+        C -- Fused Features --> D(YoloOneDetectionHead)
+        D --> E[Output Detections]
+    end
+
+    subgraph YoloOneBackbone
+        B_in[Input] --> B_stem(Stem: Conv)
+        B_stem --> B_s1_ds(Conv: Downsample)
+        B_s1_ds --> B_s1_csp(CSPBlock: Stage 1)
+        B_s1_csp -- P3 --> B_s2_ds(Conv: Downsample)
+        B_s2_ds --> B_s2_csp(CSPBlock: Stage 2)
+        B_s2_csp -- P4 --> B_s3_ds(Conv: Downsample)
+        B_s3_ds --> B_s3_csp(CSPBlock: Stage 3)
+        B_s3_csp -- P5 --> B_sa(SpatialAttention)
+        B_sa --> B_out[P3, P4, P5 Features]
+    end
+
+    subgraph PAFPN Neck
+        C_in[P3, P4, P5 Features] --> C_lat_p3(Lateral Conv P3)
+        C_in --> C_lat_p4(Lateral Conv P4)
+        C_in --> C_lat_p5(Lateral Conv P5)
+
+        C_lat_p5 --> C_inter_p4(Interpolate)
+        C_inter_p4 & C_lat_p4 --> C_td_p4_csp(CSPBlock: Top-Down P4)
+
+        C_td_p4_csp --> C_inter_p3(Interpolate)
+        C_inter_p3 & C_lat_p3 --> C_td_p3_csp(CSPBlock: Top-Down P3)
+
+        C_td_p3_csp --> C_ds_p4(Conv: Downsample P4)
+        C_ds_p4 & C_td_p4_csp --> C_bu_p4_csp(CSPBlock: Bottom-Up P4)
+
+        C_bu_p4_csp --> C_ds_p5(Conv: Downsample P5)
+        C_ds_p5 & C_lat_p5 --> C_bu_p5_csp(CSPBlock: Bottom-Up P5)
+
+        C_td_p3_csp -- Fused P3 --> C_out[Fused Features]
+        C_bu_p4_csp -- Fused P4 --> C_out
+        C_bu_p5_csp -- Fused P5 --> C_out
+    end
+
+    subgraph YoloOneDetectionHead
+        D_in[Fused Features] --> D_feat1(Feature Map 1)
+        D_in --> D_feat2(Feature Map 2)
+        D_in --> D_feat3(Feature Map 3)
+
+        subgraph Level 1
+            D_feat1 --> D_det1(Detection Head)
+            D_feat1 --> D_asp1(Aspect Head)
+            D_feat1 --> D_conf1(Shape Confidence Head)
+        end
+
+        subgraph Level 2
+            D_feat2 --> D_det2(Detection Head)
+            D_feat2 --> D_asp2(Aspect Head)
+            D_feat2 --> D_conf2(Shape Confidence Head)
+        end
+
+        subgraph Level 3
+            D_feat3 --> D_det3(Detection Head)
+            D_feat3 --> D_asp3(Aspect Head)
+            D_feat3 --> D_conf3(Shape Confidence Head)
+        end
+
+        D_det1 & D_det2 & D_det3 --> D_out_det[Detections]
+        D_asp1 & D_asp2 & D_asp3 --> D_out_asp[Aspects]
+        D_conf1 & D_conf2 & D_conf3 --> D_out_conf[Shape Confidences]
+    end
