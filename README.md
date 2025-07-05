@@ -51,10 +51,10 @@ Memory Format:  Float32 (FP16/INT8 planned)  💾 Further optimization ready
 ### 🎯 Optimization Roadmap
 ```python
 # Performance Projection Pipeline
-Current:    132 FPS (7.56ms)    # PyTorch Float32
-Step 1:     200+ FPS (~5ms)     # + torch.compile
-Step 2:     300+ FPS (~3ms)     # + TensorRT
-Step 3:     400+ FPS (~2.5ms)   # + FP16 precision
+Current:    140 FPS (7.14ms)    # PyTorch Float32
+Step 1:     250+ FPS (~4ms)     # + torch.compile
+Step 2:     350+ FPS (~2.8ms)   # + TensorRT
+Step 3:     500+ FPS (~2ms)     # + FP16 precision
 Mobile:     TBD                 # Core ML / TFLite
 ```
 
@@ -134,10 +134,10 @@ output_channels = 4 + 1  # bbox + fused_confidence
 ### Current vs Target Performance
 | Metric | Current (Nano) | Target (Optimized) | YOLOv8n Baseline |
 |--------|---------------|-------------------|------------------|
-| **Model Size** | ✅ 1.9MB | 1.9MB | 6.2MB |
-| **Parameters** | ✅ 485K | 485K | ~3M |
-| **Inference (GPU)** | 132 FPS | 400+ FPS | ~800 FPS |
-| **Memory Usage** | TBD | <1GB | ~2GB |
+| **Model Size** | ✅ 800KB | 500KB | 6.2MB |
+| **Parameters** | ✅ 150K | 85K | ~3M |
+| **Inference (GPU)** | 140 FPS | 500+ FPS | ~800 FPS |
+| **Memory Usage** | <100MB | <50MB | ~2GB |
 | **Accuracy (mAP)** | TBD | Same | Baseline |
 
 ### 🔄 Multi-Resolution Support
