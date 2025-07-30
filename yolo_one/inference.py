@@ -14,7 +14,8 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional, Union
 import time
 from pathlib import Path
-import logging
+import logging, os
+import argparse
 
 # Import your YOLO-One model
 from yolo_one.models.yolo_one_model import YoloOne
@@ -682,30 +683,69 @@ def create_yolo_one_inference(
 if __name__ == "__main__":
     
     # Initialize YOLO-One inference engine
+
+    parser = argparse.ArgumentParser(description="Inference")
+    parser.add_argument("--model-path","--model", "-m", required=True, help="Path to the training model")
+    parser.add_argument("--device", "-d", required=False, choices=["cuda", "cpu"], default="cuda", help="Train with gpu or cpu. Default gpu")
+    parser.add_argument("--confidence-threshold", "--confidence", "-c", type=float, default=0.25, required=False, help="Confidence threshold value. Only float value" )
+    parser.add_argument("--nms-threshold", "--nms", "-n", type=float, default=0.45, required=False, help="Nms threshold value. Only float value" )
+    parser.add_argument("--image-path", "--image", "-i",  required=True, help="Path to test image." )
+    parser.add_argument("--output-path", "--output", "-o",  required=True, help="Path to save predict image. Use for visualization" )
+    args = parser.parse_args()
+    model_path = args.model_path
+    device = args.device 
+    confidence_threshold = args.confidence_threshold
+    nms_threshold = args.nms_threshold
+    image_path = args.image_path
+    output_path = args.output_path
+
     inference_engine = create_yolo_one_inference(
-        model_path="/home/ibra/Documents/iatrax/YOLO-One/runs/train_20250615_210453/final_model.pt",
-        device="cuda",
-        confidence_threshold=0.25,
-        nms_threshold=0.45
+    model_path=model_path,
+    device=device,
+    confidence_threshold=confidence_threshold,
+    nms_threshold=nms_threshold
     )
-    
+
     # Single image prediction
+
+    
     results = inference_engine.predict_image(
-        "/home/ibra/Documents/iatrax/YOLO-One/datasets/images/test/The-Curve-Atrium_mp4-8_jpg.rf.d21b38d61f9f727604859cd2274761e2.jpg", 
+        image_path, 
         return_crops=True,
         visualize=True
     )
     
+
     print(f"Detected {results['num_detections']} objects")
     print(f"Inference time: {results['inference_time']*1000:.2f}ms")
     img_save = results['visualization']
-    cv2.imwrite('output.jpg', img_save)
+    cv2.imwrite(os.path.join(output_path, 'output.jpg'), img_save)
+
+    stats = inference_engine.get_performance_stats()
+    print(f"Average FPS: {stats['fps']:.1f}")
+    print(f"Average total time: {stats['avg_total_time_ms']:.2f}ms")
+    
+
+
+    # inference_engine = create_yolo_one_inference(
+    #     model_path="/home/ibra/Documents/iatrax/YOLO-One/runs/train_20250615_210453/final_model.pt",
+    #     device="cuda",
+    #     confidence_threshold=0.25,
+    #     nms_threshold=0.45
+    # )
+    
+    # Single image prediction
+
+    # results = inference_engine.predict_image(
+    #     "/home/ibra/Documents/iatrax/YOLO-One/datasets/images/test/The-Curve-Atrium_mp4-8_jpg.rf.d21b38d61f9f727604859cd2274761e2.jpg", 
+    #     return_crops=True,
+    #     visualize=True
+    # )
+    
+
     
     # Batch prediction
     #image_list = ["img1.jpg", "img2.jpg", "img3.jpg"]
     #batch_results = inference_engine.predict_batch(image_list, batch_size=4)
     
     # Performance statistics
-    stats = inference_engine.get_performance_stats()
-    print(f"Average FPS: {stats['fps']:.1f}")
-    print(f"Average total time: {stats['avg_total_time_ms']:.2f}ms")
