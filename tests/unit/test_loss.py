@@ -37,15 +37,10 @@ class TestYoloOneLoss:
     
     @pytest.fixture
     def sample_predictions(self, device):
-        """Generate sample predictions for 3 scales (P3, P4, P5)"""
+        """Generate sample predictions for 3 scales (P3, P4, P5) in the correct dict format."""
         batch_size = 2
-        predictions = [
-            torch.randn(batch_size, 15, 80, 80, device=device, requires_grad=True),   # P3: 3*5 channels, 80x80
-            torch.randn(batch_size, 15, 40, 40, device=device, requires_grad=True),   # P4: 3*5 channels, 40x40
-            torch.randn(batch_size, 15, 20, 20, device=device, requires_grad=True)    # P5: 3*5 channels, 20x20
-        ]
-        return predictions
-    
+        return self.create_predictions_with_grad(batch_size, device)
+
     @pytest.fixture
     def sample_targets(self, device):
         """Generate sample ground truth targets"""
@@ -56,14 +51,26 @@ class TestYoloOneLoss:
             [1, 0, 0.7, 0.6, 0.2, 0.3]     # Object in batch 1
         ], dtype=torch.float32, device=device)
         return targets
-    
-    def create_predictions_with_grad(self, batch_size: int, device: torch.device) -> List[torch.Tensor]:
-        """Helper to create predictions with gradients enabled"""
-        return [
-            torch.randn(batch_size, 15, 80, 80, device=device, requires_grad=True),
-            torch.randn(batch_size, 15, 40, 40, device=device, requires_grad=True),
-            torch.randn(batch_size, 15, 20, 20, device=device, requires_grad=True)
-        ]
+
+    def create_predictions_with_grad(self, batch_size: int, device: torch.device) -> Dict[str, List[torch.Tensor]]:
+        """Helper to create predictions with gradients enabled in the correct dict format."""
+        return {
+            'detections': [
+                torch.randn(batch_size, 15, 80, 80, device=device, requires_grad=True),
+                torch.randn(batch_size, 15, 40, 40, device=device, requires_grad=True),
+                torch.randn(batch_size, 15, 20, 20, device=device, requires_grad=True)
+            ],
+            'aspects': [
+                torch.randn(batch_size, 1, 80, 80, device=device, requires_grad=True),
+                torch.randn(batch_size, 1, 40, 40, device=device, requires_grad=True),
+                torch.randn(batch_size, 1, 20, 20, device=device, requires_grad=True)
+            ],
+            'shape_confidences': [
+                torch.randn(batch_size, 1, 80, 80, device=device, requires_grad=True),
+                torch.randn(batch_size, 1, 40, 40, device=device, requires_grad=True),
+                torch.randn(batch_size, 1, 20, 20, device=device, requires_grad=True)
+            ]
+        }
     
     def test_loss_initialization(self):
         """Test loss function initialization"""
@@ -131,36 +138,40 @@ class TestYoloOneLoss:
         print(f"✅ Objectness loss: {obj_loss.item():.6f}")
         
         # Check loss composition
-        expected_total = box_loss + obj_loss
+        loss_aspect = loss_dict['aspect_loss']
+        loss_shape_conf = loss_dict['shape_conf_loss']
+        expected_total = box_loss + obj_loss + loss_aspect + loss_shape_conf
         assert torch.allclose(total_loss, expected_total, atol=1e-6), "Loss composition error"
         print("✅ Loss composition verified")
-    
+
     def test_gradient_flow(self, loss_function, sample_predictions, sample_targets, device):
         """Test gradient computation and backpropagation"""
         print("\n🧪 Testing Gradient Flow")
         print("-" * 40)
-        
+
         # Ensure predictions require gradients (already set in fixture)
-        for i, pred in enumerate(sample_predictions):
-            assert pred.requires_grad, f"Prediction {i} should require gradients"
-        
+        for key, pred_list in sample_predictions.items():
+            for i, pred in enumerate(pred_list):
+                assert pred.requires_grad, f"Prediction {key}[{i}] should require gradients"
+
         # Forward pass
         loss_dict = loss_function(sample_predictions, sample_targets)
         total_loss = loss_dict['total_loss']
-        
+
         # Backward pass
         total_loss.backward()
-        
+
         # Check gradients
-        for i, pred in enumerate(sample_predictions):
-            assert pred.grad is not None, f"No gradients for prediction scale {i}"
-            assert not torch.isnan(pred.grad).any(), f"NaN gradients in scale {i}"
-            assert not torch.isinf(pred.grad).any(), f"Inf gradients in scale {i}"
-            
-            grad_norm = pred.grad.norm().item()
-            assert grad_norm > 0, f"Zero gradients in scale {i}"
-            print(f"✅ Scale {i} gradient norm: {grad_norm:.6f}")
-        
+        for key, pred_list in sample_predictions.items():
+            for i, pred in enumerate(pred_list):
+                assert pred.grad is not None, f"No gradients for prediction {key}[{i}]"
+                assert not torch.isnan(pred.grad).any(), f"NaN gradients in {key}[{i}]"
+                assert not torch.isinf(pred.grad).any(), f"Inf gradients in {key}[{i}]"
+
+                grad_norm = pred.grad.norm().item()
+                assert grad_norm > 0, f"Zero gradients in {key}[{i}]"
+                print(f"✅ {key}[{i}] gradient norm: {grad_norm:.6f}")
+
         print("✅ Gradient flow verified")
     
     def test_empty_targets(self, loss_function, device):
@@ -492,11 +503,23 @@ def test_loss_performance():
     
     # Large batch for performance testing
     batch_size = 16
-    predictions = [
-        torch.randn(batch_size, 15, 80, 80, device=device, requires_grad=True),
-        torch.randn(batch_size, 15, 40, 40, device=device, requires_grad=True),
-        torch.randn(batch_size, 15, 20, 20, device=device, requires_grad=True)
-    ]
+    predictions = {
+        'detections': [
+            torch.randn(batch_size, 15, 80, 80, device=device, requires_grad=True),
+            torch.randn(batch_size, 15, 40, 40, device=device, requires_grad=True),
+            torch.randn(batch_size, 15, 20, 20, device=device, requires_grad=True)
+        ],
+        'aspects': [
+            torch.randn(batch_size, 1, 80, 80, device=device, requires_grad=True),
+            torch.randn(batch_size, 1, 40, 40, device=device, requires_grad=True),
+            torch.randn(batch_size, 1, 20, 20, device=device, requires_grad=True)
+        ],
+        'shape_confidences': [
+            torch.randn(batch_size, 1, 80, 80, device=device, requires_grad=True),
+            torch.randn(batch_size, 1, 40, 40, device=device, requires_grad=True),
+            torch.randn(batch_size, 1, 20, 20, device=device, requires_grad=True)
+        ]
+    }
     
     # Multiple targets
     targets = torch.tensor([

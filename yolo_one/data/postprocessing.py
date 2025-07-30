@@ -138,15 +138,15 @@ class YoloOnePostProcessor:
         )
         
         # Extract predictions
-        class_prob = pred[0]      # [H, W]
-        center_x = pred[1]        # [H, W] 
-        center_y = pred[2]        # [H, W]
-        width = pred[3]           # [H, W]
-        height = pred[4]          # [H, W]
-        objectness = pred[5]      # [H, W]
-        
-        # Calculate confidence
-        confidence = class_prob * objectness  # [H, W]
+        # The model outputs: [x_center, y_center, width, height, confidence]
+        center_x = pred[0]        # [H, W]
+        center_y = pred[1]        # [H, W]
+        width = pred[2]           # [H, W]
+        height = pred[3]          # [H, W]
+        confidence = pred[4]      # [H, W]
+
+        # In a single-class scenario, class_prob is the same as confidence
+        class_prob = confidence
         
         # Convert relative coordinates to absolute
         abs_center_x = (grid_x + center_x) * stride

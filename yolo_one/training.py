@@ -20,7 +20,7 @@ from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 import argparse
 import warnings
-from tqdm import tqdm # Import tqdm for progress bars
+from tqdm.auto import tqdm  # Auto-detects notebook environment for clean progress bars
 
 warnings.filterwarnings('ignore')
 
