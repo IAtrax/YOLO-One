@@ -375,3 +375,10 @@ YOLO_ONE_CONFIGS = {
     'edge': YoloOneConfig.get_edge_config(),
     'high_accuracy': YoloOneConfig.get_high_accuracy_config()
 }
+
+MODEL_SIZE_MULTIPLIERS = {
+        'nano':   {'width': 0.25, 'depth': 0.33},
+        'small':  {'width': 0.50, 'depth': 0.33},
+        'medium': {'width': 0.75, 'depth': 0.67},
+        'large':  {'width': 1.00, 'depth': 1.00},
+    }

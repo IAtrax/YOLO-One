@@ -67,6 +67,7 @@ Thumbs.db
 *.trt
 *.engine
 datasets/
+datasets_test/
 runs/
 
 # Logs

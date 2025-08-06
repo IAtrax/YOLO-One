@@ -9,15 +9,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Dict, Any
+from yolo_one.configs.config import MODEL_SIZE_MULTIPLIERS as size_multipliers
 
 # Import reusable blocks from the backbone to ensure consistency
-from .yolo_one_backbone import Conv, CSPBlock
+from .common import Conv, CSPBlock
 
 # --- Main Neck ---
 
 class PAFPN(nn.Module):
     """
-    Refactored Path Aggregation Feature Pyramid Network (PAFPN).
+     Path Aggregation Feature Pyramid Network (PAFPN).
 
     This neck is built dynamically based on a configuration dictionary,
     making it highly flexible and easy to experiment with.
@@ -71,26 +72,18 @@ class PAFPN(nn.Module):
 
         return [td_p3, bu_p4, bu_p5]
 
-# --- Factory Function ---
+# --- BUILD NECK ---
 
 def create_yolo_one_neck(model_size: str, in_channels: List[int]) -> PAFPN:
     """
-    Factory function to create a YOLO-One neck of a specific size.
+    Function to create a YOLO-One neck of a specific size.
     """
-    size_multipliers = {
-        'nano':   {'width': 0.25, 'depth': 0.33},
-        'small':  {'width': 0.50, 'depth': 0.33},
-        'medium': {'width': 0.75, 'depth': 0.67},
-        'large':  {'width': 1.00, 'depth': 1.00},
-    }
+
     if model_size not in size_multipliers:
         raise ValueError(f"Model size '{model_size}' not supported.")
 
     w = size_multipliers[model_size]['width']
     d = size_multipliers[model_size]['depth']
-
-    # All feature maps from the neck will have the same number of channels
-    # We use the second backbone channel as the base
     neck_channels = int(in_channels[1] * w)
 
     config = {
