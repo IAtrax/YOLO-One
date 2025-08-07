@@ -93,10 +93,16 @@ def _make_divisible(value: float, divisor: int = 8) -> int:
 
 def create_yolo_one_backbone(model_size: str = 'nano') -> YoloOneBackbone:
     """
-    Function to create a YOLO-One backbone of a specific size.
+    Create a YOLO-One backbone.
 
-    This function defines the architecture configurations and passes the
-    correct one to the YoloOneBackbone class.
+    Args:
+        model_size: str - Size like 'nano' (defines width/depth multipliers).
+        multipliers: dict - Mapping of sizes to {'width': float, 'depth': float}.
+        base_channels: List[int] - Base channel counts for scaling.
+
+    Raises:
+        ValueError: If model_size not in multipliers.
+   
     """
    
     if model_size not in size_multipliers:

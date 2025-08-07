@@ -24,6 +24,19 @@ class PAFPN(nn.Module):
     making it highly flexible and easy to experiment with.
     """
     def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the PAFPN (Path Aggregation Feature Pyramid Network).
+
+        This constructor sets up the PAFPN with lateral convolutions, top-down,
+        and bottom-up pathways based on the provided configuration.
+
+        Args:
+            config (Dict[str, Any]): Configuration dictionary with keys:
+                - 'in_channels': List of input channel sizes from the backbone.
+                - 'out_channels': List of output channel sizes for the neck.
+                - 'num_blocks': Number of blocks in CSP layers.
+        """
+
         super().__init__()
         self.config = config
         in_channels = config['in_channels']
