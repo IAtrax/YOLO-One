@@ -3,106 +3,161 @@ Iatrax Team - 2025 - https://iatrax.com
 
 LICENSE: MIT
 
-REFACTORED NECK MODULE FOR YOLO-ONE (PAFPN Implementation)
+YOLO-One Neck (PAFPN)
+Configurable PAFPN with concat or sum fusion, quantization-friendly.
 """
+
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Dict, Any
+
 from yolo_one.configs.config import MODEL_SIZE_MULTIPLIERS as size_multipliers
+# Reuse the same blocks for consistency with the backbone
+from yolo_one.models.common import Conv, CSPBlock
 
-# Import reusable blocks from the backbone to ensure consistency
-from .common import Conv, CSPBlock
-
-# --- Main Neck ---
 
 class PAFPN(nn.Module):
     """
-     Path Aggregation Feature Pyramid Network (PAFPN).
+    Path Aggregation Feature Pyramid Network (PAFPN).
 
-    This neck is built dynamically based on a configuration dictionary,
-    making it highly flexible and easy to experiment with.
+    Inputs:
+        - [P3, P4, P5] feature maps from the backbone
+
+    Outputs:
+        - [P3', P4', P5'] fused feature maps (same order, low → high resolution)
+
+    Config keys:
+        - in_channels:  List[int] input channels (P3, P4, P5)
+        - out_channels: List[int] output channels (often equal, e.g., C4)
+        - num_blocks:   int, number of internal blocks inside CSP stages
+        - sum_fusion:   bool, if True use element-wise sum instead of concat (lighter)
+        - upsample_mode:str, 'nearest' (default) or 'nearest-exact'
     """
-    def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize the PAFPN (Path Aggregation Feature Pyramid Network).
-
-        This constructor sets up the PAFPN with lateral convolutions, top-down,
-        and bottom-up pathways based on the provided configuration.
-
-        Args:
-            config (Dict[str, Any]): Configuration dictionary with keys:
-                - 'in_channels': List of input channel sizes from the backbone.
-                - 'out_channels': List of output channel sizes for the neck.
-                - 'num_blocks': Number of blocks in CSP layers.
-        """
-
+    def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
         self.config = config
-        in_channels = config['in_channels']
-        out_channels = config['out_channels']
 
-        # Lateral convolutions to unify channel dimensions
+        in_channels: List[int] = list(config["in_channels"])
+        out_channels: List[int] = list(config["out_channels"])
+        if len(in_channels) != 3 or len(out_channels) != 3:
+            raise ValueError("Expected 3 input and 3 output channels for [P3, P4, P5]")
+
+        self.sum_fusion: bool = bool(config.get("sum_fusion", False))
+        self.upsample_mode: str = str(config.get("upsample_mode", "nearest"))
+
+        # Lateral 1x1 convs to unify channels per level
         self.lateral_convs = nn.ModuleList([
-            Conv(in_ch, out_ch, kernel_size=1) for in_ch, out_ch in zip(in_channels, out_channels)
+            Conv(c_in, c_out, kernel_size=1, stride=1) for c_in, c_out in zip(in_channels, out_channels)
         ])
 
-        # Top-down pathway (from P5 to P3)
-        self.top_down_blocks = nn.ModuleList([
-            CSPBlock(out_channels[1] + out_channels[2], out_channels[1], num_blocks=config['num_blocks']),
-            CSPBlock(out_channels[0] + out_channels[1], out_channels[0], num_blocks=config['num_blocks'])
-        ])
+        # Top-down pathway: P5 -> P4 -> P3
+        if self.sum_fusion:
+            # Sum fusion keeps the same channel count before CSP
+            self.top_down_blocks = nn.ModuleList([
+                CSPBlock(out_channels[1], out_channels[1], num_blocks=config["num_blocks"]),
+                CSPBlock(out_channels[0], out_channels[0], num_blocks=config["num_blocks"]),
+            ])
+        else:
+            # Concat fusion doubles input channels before CSP
+            self.top_down_blocks = nn.ModuleList([
+                CSPBlock(out_channels[1] + out_channels[2], out_channels[1], num_blocks=config["num_blocks"]),
+                CSPBlock(out_channels[0] + out_channels[1], out_channels[0], num_blocks=config["num_blocks"]),
+            ])
 
-        # Bottom-up pathway (from P3 to P5)
+        # Bottom-up pathway: P3' -> P4' -> P5'
         self.downsample_convs = nn.ModuleList([
             Conv(out_channels[0], out_channels[0], kernel_size=3, stride=2),
-            Conv(out_channels[1], out_channels[1], kernel_size=3, stride=2)
-        ])
-        self.bottom_up_blocks = nn.ModuleList([
-            CSPBlock(out_channels[0] + out_channels[1], out_channels[1], num_blocks=config['num_blocks']),
-            CSPBlock(out_channels[1] + out_channels[2], out_channels[2], num_blocks=config['num_blocks'])
+            Conv(out_channels[1], out_channels[1], kernel_size=3, stride=2),
         ])
 
-        # Store final output channels for the head
+        if self.sum_fusion:
+            self.bottom_up_blocks = nn.ModuleList([
+                CSPBlock(out_channels[1], out_channels[1], num_blocks=config["num_blocks"]),
+                CSPBlock(out_channels[2], out_channels[2], num_blocks=config["num_blocks"]),
+            ])
+        else:
+            self.bottom_up_blocks = nn.ModuleList([
+                CSPBlock(out_channels[0] + out_channels[1], out_channels[1], num_blocks=config["num_blocks"]),
+                CSPBlock(out_channels[1] + out_channels[2], out_channels[2], num_blocks=config["num_blocks"]),
+            ])
+
+        # Expose final channels for the head
         self.out_channels = out_channels
 
     def forward(self, inputs: List[torch.Tensor]) -> List[torch.Tensor]:
-        # inputs are [P3, P4, P5] from the backbone
+        if not isinstance(inputs, (list, tuple)) or len(inputs) != 3:
+            raise ValueError("Expected [P3, P4, P5] inputs")
         p3, p4, p5 = inputs
 
-        # Apply lateral convolutions
+        # Lateral projections
         lat_p3 = self.lateral_convs[0](p3)
         lat_p4 = self.lateral_convs[1](p4)
         lat_p5 = self.lateral_convs[2](p5)
 
-        # Top-down pathway
-        td_p4 = self.top_down_blocks[0](torch.cat([F.interpolate(lat_p5, size=lat_p4.shape[2:], mode='nearest'), lat_p4], 1))
-        td_p3 = self.top_down_blocks[1](torch.cat([F.interpolate(td_p4, size=lat_p3.shape[2:], mode='nearest'), lat_p3], 1))
+        # Top-down fusion
+        up_p5_to_p4 = F.interpolate(lat_p5, size=lat_p4.shape[2:], mode=self.upsample_mode)
+        td_p4_in = (up_p5_to_p4 + lat_p4) if self.sum_fusion else torch.cat([up_p5_to_p4, lat_p4], dim=1)
+        td_p4 = self.top_down_blocks[0](td_p4_in)
 
-        # Bottom-up pathway
-        bu_p4 = self.bottom_up_blocks[0](torch.cat([self.downsample_convs[0](td_p3), td_p4], 1))
-        bu_p5 = self.bottom_up_blocks[1](torch.cat([self.downsample_convs[1](bu_p4), lat_p5], 1))
+        up_p4_to_p3 = F.interpolate(td_p4, size=lat_p3.shape[2:], mode=self.upsample_mode)
+        td_p3_in = (up_p4_to_p3 + lat_p3) if self.sum_fusion else torch.cat([up_p4_to_p3, lat_p3], dim=1)
+        td_p3 = self.top_down_blocks[1](td_p3_in)
 
+        # Bottom-up aggregation
+        p3_down = self.downsample_convs[0](td_p3)
+        bu_p4_in = (p3_down + td_p4) if self.sum_fusion else torch.cat([p3_down, td_p4], dim=1)
+        bu_p4 = self.bottom_up_blocks[0](bu_p4_in)
+
+        p4_down = self.downsample_convs[1](bu_p4)
+        bu_p5_in = (p4_down + lat_p5) if self.sum_fusion else torch.cat([p4_down, lat_p5], dim=1)
+        bu_p5 = self.bottom_up_blocks[1](bu_p5_in)
+
+        # Return in ascending resolution: [P3', P4', P5']
         return [td_p3, bu_p4, bu_p5]
 
-# --- BUILD NECK ---
 
-def create_yolo_one_neck(model_size: str, in_channels: List[int]) -> PAFPN:
+def create_yolo_one_neck(
+    model_size: str,
+    in_channels: List[int],
+    **kwargs: Any,
+) -> PAFPN:
     """
-    Function to create a YOLO-One neck of a specific size.
-    """
+    Build the YOLO-One PAFPN neck.
 
+    Args:
+        model_size:   'nano' | 'small' | 'medium' | 'large'
+        in_channels:  [C3, C4, C5] from the backbone (already width-scaled)
+        kwargs:
+            - num_blocks:   int, defaults to max(1, round(2 * depth_mult))
+            - neck_channels:int, defaults to in_channels[1] (avoid double width scaling)
+            - sum_fusion:   bool, default True for 'nano', False otherwise
+            - upsample_mode:str, default 'nearest'
+
+    Returns:
+        PAFPN instance.
+    """
     if model_size not in size_multipliers:
         raise ValueError(f"Model size '{model_size}' not supported.")
 
-    w = size_multipliers[model_size]['width']
-    d = size_multipliers[model_size]['depth']
-    neck_channels = int(in_channels[1] * w)
+    depth_mult = float(size_multipliers[model_size]["depth"])
+    num_blocks = int(kwargs.get("num_blocks", max(1, round(2 * depth_mult))))
 
-    config = {
-        'in_channels': in_channels,
-        'out_channels': [neck_channels] * len(in_channels),
-        'num_blocks': max(1, round(2 * d)),
+    # IMPORTANT: in_channels already includes width scaling from the backbone.
+    neck_channels = int(kwargs.get("neck_channels", in_channels[1]))
+
+    default_sum = True if model_size == "nano" else False
+    sum_fusion = bool(kwargs.get("sum_fusion", default_sum))
+    upsample_mode = str(kwargs.get("upsample_mode", "nearest"))
+
+    config: Dict[str, Any] = {
+        "in_channels": in_channels,
+        "out_channels": [neck_channels] * len(in_channels),
+        "num_blocks": num_blocks,
+        "sum_fusion": sum_fusion,
+        "upsample_mode": upsample_mode,
     }
-
     return PAFPN(config)

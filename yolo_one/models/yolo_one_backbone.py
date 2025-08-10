@@ -16,58 +16,68 @@ from yolo_one.configs.config import MODEL_SIZE_MULTIPLIERS as size_multipliers
 
 class YoloOneBackbone(nn.Module):
     """
-    Refactored YOLO-One Backbone.
-    This backbone is built dynamically based on a configuration dictionary,
-    making it highly flexible and easy to experiment with.
+    YOLO-One Backbone!
+    The backbone is built dynamically based on a configuration dictionary,
     """
     def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the YOLO-One Backbone.
+
+        Args:
+        - config (Dict[str, Any]): Configuration dictionary for the backbone.
+        """
         super().__init__()
-        self.config = config
-        
-        # Initial stem layer
-        self.stem = Conv(3, config['channels'][0], kernel_size=6, stride=2)
-        
-        # Build the main stages of the backbone in a loop
+        self.config = config        
+        self.stem = Conv(3, config['channels'][0], kernel_size=7, stride=2)
         self.layers = nn.ModuleList()
         in_ch = config['channels'][0]
-        
         for i, (out_ch, num_blocks, use_csp) in enumerate(config['stages']):
-            # Downsampling layer
             self.layers.append(Conv(in_ch, config['channels'][i], kernel_size=3, stride=2))
             in_ch = config['channels'][i]
-            
             # CSP or Conv stage
             if use_csp:
                 stage = CSPBlock(in_ch, out_ch, num_blocks=num_blocks)
             else:
-                stage = Conv(in_ch, out_ch, kernel_size=3, stride=1) # Stride is 1 as downsampling is separate
+                stage = Conv(in_ch, out_ch, kernel_size=3, stride=1) 
             self.layers.append(stage)
             in_ch = out_ch
 
-        # Spatial attention for the final feature map
-        self.spatial_attention = SpatialAttention()
-        
         # Define which feature maps to return for the neck
         # The output indices now need to be mapped to the new `layers` structure
         self.output_indices = [idx * 2 + 1 for idx in config['output_indices']]
         self.out_channels = [config['stages'][i][0] for i in config['output_indices']]
 
+        # Create a separate attention layer for each output feature map.
+        # This allows each scale to learn its own spatial focus.
+        self.attention_layers = nn.ModuleList([SpatialAttention() for _ in self.output_indices])
+
         self._initialize_weights()
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+        """
+        Forward pass through the YOLO-One backbone.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            List[torch.Tensor]: List of output tensors, each from a different scale.
+        """
         outputs = []
         x = self.stem(x)
+        
+        # Keep track of which output we are processing to apply the correct attention layer
+        output_count = 0
         
         # Pass input through all layers
         for i, layer in enumerate(self.layers):
             x = layer(x)
             # If the index of this layer is one of our desired outputs, save it
             if i in self.output_indices:
-                outputs.append(x)
-
-        # Apply spatial attention to the last output
-        if outputs:
-            outputs[-1] = self.spatial_attention(outputs[-1])
+                # Apply the corresponding attention layer before saving the output
+                attended_x = self.attention_layers[output_count](x)
+                outputs.append(attended_x)
+                output_count += 1
         
         return outputs
 

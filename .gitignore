@@ -23,6 +23,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+out/
 
 # PyInstaller
 *.manifest
@@ -80,8 +81,5 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 
-# Build directories
-build/
-out/
+# Mobile development
 mobile/android/.gradle/
-.github/

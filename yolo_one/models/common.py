@@ -9,7 +9,7 @@ Common class or function definitions for YOLO-One models
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from typing import List, Dict, Any, Tuple
+from typing import Tuple
 
 
 class Conv(nn.Module):
@@ -63,25 +63,38 @@ class CSPBlock(nn.Module):
     """
     def __init__(self, in_channels: int, out_channels: int, num_blocks: int = 1,
                  shortcut: bool = True, expansion: float = 0.5):
+        """
+        Initialize the CSPBlock.
+
+        Args:
+            in_channels (int): Number of channels in the input feature map.
+            out_channels (int): Number of channels in the output feature map.
+            num_blocks (int, optional): Number of Bottleneck blocks in the CSPBlock. Defaults to 1.
+            shortcut (bool, optional): Whether to use shortcuts in Bottleneck blocks. Defaults to True.
+            expansion (float, optional): Expansion factor of Bottleneck blocks. Defaults to 0.5.
+        """
         super().__init__()
         hidden_channels = int(out_channels * expansion)
-        # Main convolution for the entire block
         self.cv1 = Conv(in_channels, hidden_channels, kernel_size=1)
-        # The "shortcut" branch
         self.cv2 = Conv(in_channels, hidden_channels, kernel_size=1)
-        # The branch with bottleneck transformations
         self.bottlenecks = nn.Sequential(
             *[Bottleneck(hidden_channels, hidden_channels, shortcut, expansion=1.0) for _ in range(num_blocks)]
         )
-        # Final convolution to merge the two branches
         self.cv3 = Conv(2 * hidden_channels, out_channels, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # The main branch passes through the bottlenecks
+        """
+        Forward pass through the CSPBlock.
+
+        Args:
+            x (torch.Tensor): Input tensor with shape (batch_size, in_channels, height, width).
+
+        Returns:
+            torch.Tensor: Output tensor with shape (batch_size, out_channels, height, width).
+        """
+
         main_branch = self.bottlenecks(self.cv1(x))
-        # The shortcut branch is a simple convolution
         shortcut_branch = self.cv2(x)
-        # Concatenate and merge
         return self.cv3(torch.cat((main_branch, shortcut_branch), dim=1))
 
 
@@ -171,7 +184,7 @@ class AAttn(nn.Module): # from https://github.com/ultralytics/ultralytics/blob/m
         return self.proj(x)
 
 
-class ABlock(nn.Module): # from https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/modules/block.py
+class Ablock(nn.Module): # from https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/modules/block.py
     """
     Area-attention block module for efficient feature extraction in YOLO models.
 
@@ -260,7 +273,7 @@ class ResidualBlock(nn.Module):
         """Apply residual connection to input features."""
         return x + self.m(x)
     
-class DFL(nn.Module):
+class DistributionFocalLoss(nn.Module):
     """
     Integral module of Distribution Focal Loss (DFL).
 
@@ -285,7 +298,7 @@ class DFL(nn.Module):
         b, _, a = x.shape  # batch, channels, anchors
         return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a)
         # return self.conv(x.view(b, self.c1, 4, a).softmax(1)).view(b, 4, a)
-class SPP(nn.Module):
+class SpatialPyramidPooling(nn.Module):
     """Spatial Pyramid Pooling (SPP) layer https://arxiv.org/abs/1406.4729."""
 
     def __init__(self, c1: int, c2: int, k: Tuple[int, ...] = (5, 9, 13)):
@@ -309,7 +322,7 @@ class SPP(nn.Module):
         return self.cv2(torch.cat([x] + [m(x) for m in self.m], 1))
 
 
-class SPPF(nn.Module):
+class SpatialPyramidPoolingFast(nn.Module):
     """Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher."""
 
     def __init__(self, c1: int, c2: int, k: int = 5):
@@ -369,34 +382,6 @@ class C2f(nn.Module): # from ultralytics
         y = [y[0], y[1]]
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
-
-class Bottleneck(nn.Module):
-    """Standard bottleneck."""
-
-    def __init__(
-        self, c1: int, c2: int, shortcut: bool = True, g: int = 1, k: Tuple[int, int] = (3, 3), e: float = 0.5
-    ):
-        """
-        Initialize a standard bottleneck module.
-
-        Args:
-            c1 (int): Input channels.
-            c2 (int): Output channels.
-            shortcut (bool): Whether to use shortcut connection.
-            g (int): Groups for convolutions.
-            k (tuple): Kernel sizes for convolutions.
-            e (float): Expansion ratio.
-        """
-        super().__init__()
-        c_ = int(c2 * e)  # hidden channels
-        self.cv1 = Conv(c1, c_, k[0], 1)
-        self.cv2 = Conv(c_, c2, k[1], 1, g=g)
-        self.add = shortcut and c1 == c2
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply bottleneck with optional shortcut connection."""
-        return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
-
 
 class BottleneckCSP(nn.Module):
     """CSP Bottleneck https://github.com/WongKinYiu/CrossStagePartialNetworks."""
