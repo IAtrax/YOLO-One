@@ -225,7 +225,8 @@ python train.py \
     --resume runs/train_20250615_120000/best_model.pt
 ```
 
-Inference 
+## Inference Pipeline
+to launch the inference pipepline, run de following command:
 
 ```python
 python inference.py \
