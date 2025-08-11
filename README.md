@@ -226,7 +226,7 @@ python train.py \
 ```
 
 ## Inference Pipeline
-to launch the inference pipepline, run de following command:
+to launch the inference pipepline, use de following command:
 
 ```python
 python inference.py \
