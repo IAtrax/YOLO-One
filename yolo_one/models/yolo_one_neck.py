@@ -145,8 +145,6 @@ def create_yolo_one_neck(
 
     depth_mult = float(size_multipliers[model_size]["depth"])
     num_blocks = int(kwargs.get("num_blocks", max(1, round(2 * depth_mult))))
-
-    # IMPORTANT: in_channels already includes width scaling from the backbone.
     neck_channels = int(kwargs.get("neck_channels", in_channels[1]))
 
     default_sum = True if model_size == "nano" else False

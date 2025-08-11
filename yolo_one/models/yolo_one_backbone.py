@@ -28,7 +28,7 @@ class YoloOneBackbone(nn.Module):
         """
         super().__init__()
         self.config = config        
-        self.stem = Conv(3, config['channels'][0], kernel_size=7, stride=2)
+        self.stem = Conv(3, config['channels'][0], kernel_size=6, stride=2)
         self.layers = nn.ModuleList()
         in_ch = config['channels'][0]
         for i, (out_ch, num_blocks, use_csp) in enumerate(config['stages']):
@@ -42,7 +42,6 @@ class YoloOneBackbone(nn.Module):
             self.layers.append(stage)
             in_ch = out_ch
 
-        # Define which feature maps to return for the neck
         # The output indices now need to be mapped to the new `layers` structure
         self.output_indices = [idx * 2 + 1 for idx in config['output_indices']]
         self.out_channels = [config['stages'][i][0] for i in config['output_indices']]
@@ -64,17 +63,12 @@ class YoloOneBackbone(nn.Module):
             List[torch.Tensor]: List of output tensors, each from a different scale.
         """
         outputs = []
-        x = self.stem(x)
-        
-        # Keep track of which output we are processing to apply the correct attention layer
-        output_count = 0
-        
-        # Pass input through all layers
+        x = self.stem(x)        
+        output_count = 0    
         for i, layer in enumerate(self.layers):
             x = layer(x)
             # If the index of this layer is one of our desired outputs, save it
             if i in self.output_indices:
-                # Apply the corresponding attention layer before saving the output
                 attended_x = self.attention_layers[output_count](x)
                 outputs.append(attended_x)
                 output_count += 1
