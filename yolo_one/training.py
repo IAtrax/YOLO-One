@@ -52,7 +52,8 @@ class YoloOneTrainer:
         val_dataloader: DataLoader,
         output_dir: str = './runs',
         resume_from: Optional[str] = None,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        iou_type: str = 'ciou'
     ):
         """
         Initialize YOLO-One trainer
@@ -72,6 +73,8 @@ class YoloOneTrainer:
         
         # Setup device
         self.device = get_device(device)
+
+        self.iou_type = iou_type
         
         # Setup output directory
         self.output_dir = Path(output_dir)
@@ -157,7 +160,7 @@ class YoloOneTrainer:
             obj_weight=loss_config.get('obj_weight', 1.0),
             focal_alpha=loss_config.get('focal_alpha', 0.25),
             focal_gamma=loss_config.get('focal_gamma', 1.5),
-            iou_type=loss_config.get('iou_type', 'ciou'),
+            iou_type=loss_config.get('iou_type', self.iou_type),
             label_smoothing=loss_config.get('label_smoothing', 0.0),
             p5_weight_boost=loss_config.get('p5_weight_boost', 1.2)
         )
@@ -563,7 +566,8 @@ def main():
                         help='Random seed')
     parser.add_argument('--workers', type=int, default=8,
                         help='Number of data loader workers')
-    
+    parser.add_argument('--iou-type', type=str, default='ciou', help='type of loss' )
+
     args = parser.parse_args()
     
     # Set random seed
@@ -611,7 +615,8 @@ def main():
         val_dataloader=val_dataloader,
         output_dir=args.output_dir,
         resume_from=args.resume,
-        device=args.device
+        device=args.device,
+        iou_type=args.iou_type
     )
     
     # Start training
@@ -620,6 +625,7 @@ def main():
         print(f"\nTraining completed successfully!")
         print(f"Best mAP: {results['best_map']:.4f}")
         print(f"Final model saved in: {trainer.run_dir}")
+        print(f'The box loss function used in this model is : {args.iou_type}')
         
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
