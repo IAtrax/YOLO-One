@@ -382,7 +382,7 @@ class YoloOneLoss(nn.Module):
         ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
         ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
         ew, eh = ex2 - ex1, ey2 - ey1
-        c2 = ew**2 + eh**2 + 1e-6
+        c2 = ew**2 + eh**2 
 
         pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
         tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
@@ -390,20 +390,20 @@ class YoloOneLoss(nn.Module):
 
         pw, ph = px2 - px1, py2 - py1
         tw, th = tx2 - tx1, ty2 - ty1
-        wc2, hc2 = ew**2 + 1e-6, eh**2 + 1e-6
+        wc2, hc2 = ew**2, eh**2 
         rho2_w = (pw - tw) ** 2
         rho2_h = (ph - th) ** 2
 
-        eiou = iou - rho2 / c2 - rho2_w / wc2 - rho2_h / hc2
+        eiou = iou - rho2 / (c2+ 1e-6) - rho2_w / (wc2 + 1e-6) - rho2_h / (hc2 + 1e-6)
         return (iou**self.focal_gamma)*(1 - eiou)
 
     def _meiou_loss(
                     self,
                     pred_boxes: torch.Tensor, 
                     target_boxes: torch.Tensor, 
-                    lambda1: float =0.4, 
-                    lambda2: float =0.3, 
-                    lambda3: float = 0.3
+                    lambda1: float =0.3, 
+                    lambda2: float =0.5, 
+                    lambda3: float = 0.2
                     )-> torch.Tensor:
         
 
@@ -422,7 +422,11 @@ class YoloOneLoss(nn.Module):
         ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
         ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
         ew, eh = ex2 - ex1, ey2 - ey1
-        c2 = ew**2 + eh**2 + 1e-6
+        c2 = ew**2 + eh**2 
+        
+        wc2, hc2 = ew**2, eh**2 
+        rho2_w = (pw - tw) ** 2
+        rho2_h = (ph - th) ** 2
 
         pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
         tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
@@ -432,8 +436,9 @@ class YoloOneLoss(nn.Module):
         tw, th = tx2 - tx1, ty2 - ty1
 
         v_aspect = (4 / (torch.pi**2)) * (torch.atan(tw / th) - torch.atan(pw / ph))**2
-        v_absolute = ((ph - th)**2 + (pw - tw)**2) / c2
-
+        v_absolute =  rho2_w / (wc2 + 1e-6) + rho2_h / (hc2 + 1e-6)
+        #v_absolute = ((ph - th)**2 + (pw - tw)**2) / (c2+ 1e-6)
+        
         ch = torch.max(ph, th) / 2
         sigma = torch.sqrt(ew**2 + eh**2)
         delta_angle = 1 - 2 * torch.sin(torch.arcsin(torch.clamp(ch / (sigma + 1e-6), -1.0, 1.0)) - (torch.pi / 4))**2
