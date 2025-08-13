@@ -140,7 +140,7 @@ class YoloOneLoss(nn.Module):
             loss_shape_conf += shape_conf_loss * self.shape_conf_weight
         
         # Total loss
-        total_loss = loss_box + loss_obj + loss_aspect + loss_shape_conf
+        total_loss = loss_box + loss_obj + loss_shape_conf #+ loss_aspect 
         
         return {
             'total_loss': total_loss,
@@ -230,6 +230,16 @@ class YoloOneLoss(nn.Module):
             target_boxes_abs = torch.cat([target_xy, target_wh], dim=-1)
             
             loss = self._ciou_loss(pred_boxes_abs, target_boxes_abs)
+        elif self.iou_type == 'meiou':
+            pred_boxes_abs = torch.cat([pred_xy, torch.exp(pred_wh)], dim=-1)
+            target_boxes_abs = torch.cat([target_xy, target_wh], dim=-1)
+            
+            loss = self._meiou_loss(pred_boxes_abs, target_boxes_abs)
+        elif self.iou_type == 'eiou':
+            pred_boxes_abs = torch.cat([pred_xy, torch.exp(pred_wh)], dim=-1)
+            target_boxes_abs = torch.cat([target_xy, target_wh], dim=-1)
+            
+            loss = self._eiou_loss(pred_boxes_abs, target_boxes_abs)
         else:
             # MSE fallback
             loss = F.mse_loss(pred_xy, target_xy) + F.mse_loss(pred_wh, target_wh)
@@ -351,6 +361,93 @@ class YoloOneLoss(nn.Module):
         
         return 1 - ciou
     
+    def _eiou_loss(
+                    self,
+                    pred_boxes: torch.Tensor, 
+                    target_boxes: torch.Tensor, 
+                    )-> torch.Tensor:
+        
+        px1, py1, px2, py2 = self._xywh_to_xyxy(pred_boxes)
+        tx1, ty1, tx2, ty2 = self._xywh_to_xyxy(target_boxes)
+
+        inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
+        inter_x2, inter_y2 = torch.min(px2, tx2), torch.min(py2, ty2)
+        inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
+
+        pred_area = torch.clamp(px2 - px1, min=0) * torch.clamp(py2 - py1, min=0)
+        target_area = torch.clamp(tx2 - tx1, min=0) * torch.clamp(ty2 - ty1, min=0)
+        union_area = pred_area + target_area - inter_area
+        iou = inter_area / (union_area + 1e-6)
+
+        ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
+        ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
+        ew, eh = ex2 - ex1, ey2 - ey1
+        c2 = ew**2 + eh**2 + 1e-6
+
+        pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
+        tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
+        rho2 = (pcx - tcx)**2 + (pcy - tcy)**2
+
+        pw, ph = px2 - px1, py2 - py1
+        tw, th = tx2 - tx1, ty2 - ty1
+        wc2, hc2 = ew**2 + 1e-6, eh**2 + 1e-6
+        rho2_w = (pw - tw) ** 2
+        rho2_h = (ph - th) ** 2
+
+        eiou = iou - rho2 / c2 - rho2_w / wc2 - rho2_h / hc2
+        return (iou**self.focal_gamma)*(1 - eiou)
+
+    def _meiou_loss(
+                    self,
+                    pred_boxes: torch.Tensor, 
+                    target_boxes: torch.Tensor, 
+                    lambda1: float =0.4, 
+                    lambda2: float =0.3, 
+                    lambda3: float = 0.3
+                    )-> torch.Tensor:
+        
+
+        px1, py1, px2, py2 = self._xywh_to_xyxy(pred_boxes)
+        tx1, ty1, tx2, ty2 = self._xywh_to_xyxy(target_boxes)
+        
+        inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
+        inter_x2, inter_y2 = torch.min(px2, tx2), torch.min(py2, ty2)
+        inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
+
+        pred_area = torch.clamp(px2 - px1, min=0) * torch.clamp(py2 - py1, min=0)
+        target_area = torch.clamp(tx2 - tx1, min=0) * torch.clamp(ty2 - ty1, min=0)
+        union_area = pred_area + target_area - inter_area
+        iou = inter_area / (union_area + 1e-6)
+
+        ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
+        ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
+        ew, eh = ex2 - ex1, ey2 - ey1
+        c2 = ew**2 + eh**2 + 1e-6
+
+        pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
+        tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
+        rho2_center = (pcx - tcx)**2 + (pcy - tcy)**2
+
+        pw, ph = px2 - px1, py2 - py1
+        tw, th = tx2 - tx1, ty2 - ty1
+
+        v_aspect = (4 / (torch.pi**2)) * (torch.atan(tw / th) - torch.atan(pw / ph))**2
+        v_absolute = ((ph - th)**2 + (pw - tw)**2) / c2
+
+        ch = torch.max(ph, th) / 2
+        sigma = torch.sqrt(ew**2 + eh**2)
+        delta_angle = 1 - 2 * torch.sin(torch.arcsin(torch.clamp(ch / (sigma + 1e-6), -1.0, 1.0)) - (torch.pi / 4))**2
+
+        v_co = lambda1 * v_aspect + lambda2 * v_absolute + lambda3 * delta_angle
+        alpha = v_co / ((1 - iou) + v_co + 1e-6)
+
+        meiou = iou - rho2_center / c2 - alpha * v_co #- 0.2 * delta_angle
+
+        return (iou**self.focal_gamma)*(1 - meiou)
+    
+    
+    
+
     def _xywh_to_xyxy(self, boxes: torch.Tensor) -> Tuple[torch.Tensor, ...]:
         """Convert center format to corner format"""
         x, y, w, h = boxes.unbind(-1)
