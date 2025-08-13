@@ -20,8 +20,6 @@ class YoloOneLoss(nn.Module):
         self,
         box_weight: float = 7.5,
         obj_weight: float = 1.0,
-        aspect_weight: float = 0.5,
-        shape_conf_weight: float = 0.2,
         focal_alpha: float = 0.25,
         focal_gamma: float = 1.5,
         iou_type: str = 'ciou',
@@ -32,8 +30,6 @@ class YoloOneLoss(nn.Module):
         
         self.box_weight = box_weight
         self.obj_weight = obj_weight
-        self.aspect_weight = aspect_weight
-        self.shape_conf_weight = shape_conf_weight
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
         self.iou_type = iou_type
@@ -53,7 +49,7 @@ class YoloOneLoss(nn.Module):
         Compute anchor-free YOLO-One loss
         
         Args:
-            predictions: Dict with 'detections', 'aspects', 'shape_confidences'
+            predictions: Dict with 'preds'
             targets: Ground truth annotations [batch_idx, class, x, y, w, h]
             model: Model for info extraction (optional)
             
@@ -61,13 +57,11 @@ class YoloOneLoss(nn.Module):
             Dictionary with loss components
         """
         
-        device = predictions['detections'][0].device
+        device = predictions['preds'][0].device
         
         # Initialize losses
         loss_box = torch.zeros(1, device=device)
         loss_obj = torch.zeros(1, device=device)
-        loss_aspect = torch.zeros(1, device=device)
-        loss_shape_conf = torch.zeros(1, device=device)
         
         # Scale information
         scales = [
@@ -79,22 +73,18 @@ class YoloOneLoss(nn.Module):
         # Process each scale
         for scale_idx, scale_info in enumerate(scales):
             
-            detections = predictions['detections'][scale_idx]
-            aspects = predictions['aspects'][scale_idx]
-            shape_confs = predictions['shape_confidences'][scale_idx]
+            detections = predictions['preds'][scale_idx]
             
             batch_size, _, height, width = detections.shape
             
             # Build targets for current scale
-            scale_targets, obj_mask, box_mask, aspect_targets = self._build_anchor_free_targets(
+            scale_targets, obj_mask, box_mask = self._build_anchor_free_targets(
                 targets, (batch_size, height, width), scale_info['stride']
             )
             
             # Extract predictions
             pred_boxes = detections[:, :4]  # [B, 4, H, W]
             pred_conf = detections[:, 4]    # [B, H, W]
-            pred_aspects = aspects[:, 0]    # [B, H, W]
-            pred_shape_conf = shape_confs[:, 0]  # [B, H, W]
             
             # Extract targets
             target_boxes = scale_targets[:, :, :, :4]  # [B, H, W, 4]
@@ -125,29 +115,15 @@ class YoloOneLoss(nn.Module):
             obj_loss = self._compute_objectness_loss(pred_conf, target_conf, obj_mask)
             loss_obj += obj_loss * self.obj_weight
             
-            # Aspect ratio loss
-            if aspect_targets is not None and box_mask.sum() > 0:
-                aspect_loss = self._compute_aspect_loss(
-                    pred_aspects[box_mask], aspect_targets[box_mask]
-                )
-                loss_aspect += aspect_loss * self.aspect_weight
             
-            # Shape confidence loss
-            shape_conf_targets = obj_mask.float()
-            shape_conf_loss = self._compute_shape_confidence_loss(
-                pred_shape_conf, shape_conf_targets
-            )
-            loss_shape_conf += shape_conf_loss * self.shape_conf_weight
         
         # Total loss
-        total_loss = loss_box + loss_obj + loss_aspect + loss_shape_conf
+        total_loss = loss_box + loss_obj
         
         return {
             'total_loss': total_loss,
             'box_loss': loss_box,
             'obj_loss': loss_obj,
-            'aspect_loss': loss_aspect,
-            'shape_conf_loss': loss_shape_conf,
             'avg_loss': total_loss.item()
         }
     
@@ -156,7 +132,7 @@ class YoloOneLoss(nn.Module):
         targets: torch.Tensor,
         grid_shape: Tuple[int, int, int],
         stride: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Build targets for anchor-free detection
         """
@@ -168,10 +144,9 @@ class YoloOneLoss(nn.Module):
         target_tensor = torch.zeros(batch_size, grid_h, grid_w, 5, device=device)
         obj_mask = torch.zeros(batch_size, grid_h, grid_w, dtype=torch.bool, device=device)
         box_mask = torch.zeros(batch_size, grid_h, grid_w, dtype=torch.bool, device=device)
-        aspect_targets = torch.zeros(batch_size, grid_h, grid_w, device=device)
         
         if targets.size(0) == 0:
-            return target_tensor, obj_mask, box_mask, aspect_targets
+            return target_tensor, obj_mask, box_mask
         
         # Process each target
         for target in targets:
@@ -196,15 +171,12 @@ class YoloOneLoss(nn.Module):
             target_tensor[batch_idx, grid_j, grid_i, 3] = height * grid_h  # dh
             target_tensor[batch_idx, grid_j, grid_i, 4] = 1.0  # confidence
             
-            # Aspect ratio target
-            aspect_ratio = width / (height + 1e-6)
-            normalized_aspect = aspect_ratio / (1 + aspect_ratio)  # Normalize to [0,1]
-            aspect_targets[batch_idx, grid_j, grid_i] = normalized_aspect
+            
             
             obj_mask[batch_idx, grid_j, grid_i] = True
             box_mask[batch_idx, grid_j, grid_i] = True
         
-        return target_tensor, obj_mask, box_mask, aspect_targets
+        return target_tensor, obj_mask, box_mask
     
     def _compute_anchor_free_box_loss(
         self, 
@@ -236,30 +208,7 @@ class YoloOneLoss(nn.Module):
         
         return loss.mean()
     
-    def _compute_aspect_loss(
-        self,
-        pred_aspects: torch.Tensor,
-        target_aspects: torch.Tensor
-    ) -> torch.Tensor:
-        """Loss for aspect ratio predictions"""
-        return F.mse_loss(pred_aspects, target_aspects)
     
-    def _compute_shape_confidence_loss(
-        self,
-        pred_shape_conf: torch.Tensor,
-        target_shape_conf: torch.Tensor
-    ) -> torch.Tensor:
-        """Loss for shape confidence predictions"""
-        bce_loss = self.bce_loss(pred_shape_conf, target_shape_conf)
-        
-        # Apply focal loss
-        if self.focal_gamma > 0:
-            pred_prob = torch.sigmoid(pred_shape_conf)
-            pt = target_shape_conf * pred_prob + (1 - target_shape_conf) * (1 - pred_prob)
-            focal_weight = self.focal_alpha * (1 - pt) ** self.focal_gamma
-            bce_loss = focal_weight * bce_loss
-        
-        return bce_loss.mean()
     
     def _compute_objectness_loss(
         self,
@@ -364,8 +313,6 @@ class YoloOneLoss(nn.Module):
 def create_yolo_one_loss(
     box_weight: float = 7.5,
     obj_weight: float = 1.0,
-    aspect_weight: float = 0.5,
-    shape_conf_weight: float = 0.2,
     focal_alpha: float = 0.25,
     focal_gamma: float = 1.5,
     iou_type: str = 'ciou',
@@ -376,8 +323,6 @@ def create_yolo_one_loss(
     return YoloOneLoss(
         box_weight=box_weight,
         obj_weight=obj_weight,
-        aspect_weight=aspect_weight,
-        shape_conf_weight=shape_conf_weight,
         focal_alpha=focal_alpha,
         focal_gamma=focal_gamma,
         iou_type=iou_type,

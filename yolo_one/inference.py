@@ -146,12 +146,14 @@ class YoloOneInference:
         # YOLO-One inference
         start_time = time.time()
         with torch.no_grad():
-            predictions = self.model(preprocessed_tensor)
+            # Activate decoding directly in the model head
+            predictions = self.model(preprocessed_tensor, decode=True, img_size=preprocessed_tensor.shape[2:])
         inference_time = time.time() - start_time
         
         # Postprocessing
         start_time = time.time()
-        detections = self._postprocess_yolo_one_predictions(
+        # Use the new simplified post-processor on the 'decoded' outputs
+        detections = self._postprocess_decoded_predictions(
             predictions, scale_factor, padding, original_image.shape[:2]
         )
         postprocessing_time = time.time() - start_time
@@ -245,7 +247,7 @@ class YoloOneInference:
         # YOLO-One batch inference
         start_time = time.time()
         with torch.no_grad():
-            batch_predictions = self.model(batch_tensor)
+            batch_predictions = self.model(batch_tensor, decode=True, img_size=batch_tensor.shape[2:])
         inference_time = time.time() - start_time
         
         # Process each image in batch
@@ -257,7 +259,7 @@ class YoloOneInference:
             img_predictions = self._extract_single_prediction(batch_predictions, i)
             
             # Postprocess
-            detections = self._postprocess_yolo_one_predictions(
+            detections = self._postprocess_decoded_predictions(
                 img_predictions, scale_factor, padding, orig_img.shape[:2]
             )
             
@@ -331,163 +333,71 @@ class YoloOneInference:
         
         return tensor, scale_factor, (pad_left, pad_top)
     
-    def _postprocess_yolo_one_predictions(
+    def _postprocess_decoded_predictions(
         self, 
-        predictions: Dict[str, List[torch.Tensor]], 
+        predictions: Dict[str, List[torch.Tensor]],
         scale_factor: float, 
         padding: Tuple[int, int],
         original_shape: Tuple[int, int]
     ) -> Dict:
         """
-        Postprocess YOLO-One multi-head predictions
+        Postprocess the already decoded predictions from the model head.
+        This function handles filtering, NMS, and rescaling.
         
         Args:
-            predictions: Multi-head predictions from YOLO-One
+            predictions: Dictionary from the model, must contain the 'decoded' key.
             scale_factor: Image scale factor
             padding: Applied padding (left, top)
             original_shape: Original image shape (height, width)
             
         Returns:
-            Dictionary with processed detections
+            Dictionary with final processed detections.
         """
-        
-        # Extract multi-head predictions
-        detection_preds = predictions['detections']
-        aspect_preds = predictions.get('aspects', None)
-        shape_conf_preds = predictions.get('shape_confidences', None)
-        
-        # Decode anchor-free predictions
-        boxes, scores = self._decode_anchor_free_predictions(detection_preds)
-        
-        # Extract aspect ratios if available
-        aspects = None
-        if aspect_preds:
-            aspects = self._extract_aspect_ratios(aspect_preds)
-        
-        # Apply confidence threshold
-        if len(scores) > 0:
-            conf_mask = scores >= self.confidence_threshold
-            boxes = boxes[conf_mask]
-            scores = scores[conf_mask]
-            
-            if aspects is not None and len(aspects) > 0:
-                aspects = aspects[conf_mask]
-        
+        # The 'decoded' key contains a list of tensors [B, 5, Hk, Wk]
+        # where 5 is (x_c, y_c, w, h, conf), all normalized to image size.
+        decoded_preds = predictions['decoded']
+
+        # Concatenate predictions from all levels
+        # [B, 5, H, W] -> [B, H, W, 5] -> [B, N, 5]
+        all_preds = [p.permute(0, 2, 3, 1).reshape(p.shape[0], -1, 5) for p in decoded_preds]
+        preds = torch.cat(all_preds, dim=1).squeeze(0)  # [N, 5] for a single image
+
+        # Filter by confidence
+        conf_mask = preds[:, 4] >= self.confidence_threshold
+        preds = preds[conf_mask]
+
+        if preds.shape[0] == 0:
+            return {'boxes': np.empty((0, 4)), 'scores': np.empty(0), 'num_detections': 0}
+
+        # Convert from (center_x, center_y, width, height) to (x1, y1, x2, y2)
+        box_cxcywh = preds[:, :4]
+        boxes_xyxy = torch.empty_like(box_cxcywh)
+        boxes_xyxy[:, 0] = box_cxcywh[:, 0] - box_cxcywh[:, 2] / 2
+        boxes_xyxy[:, 1] = box_cxcywh[:, 1] - box_cxcywh[:, 3] / 2
+        boxes_xyxy[:, 2] = box_cxcywh[:, 0] + box_cxcywh[:, 2] / 2
+        boxes_xyxy[:, 3] = box_cxcywh[:, 1] + box_cxcywh[:, 3] / 2
+        scores = preds[:, 4]
+
         # Apply NMS
-        if len(boxes) > 0:
-            keep_indices = self._apply_nms(boxes, scores)
-            boxes = boxes[keep_indices]
-            scores = scores[keep_indices]
-            
-            if aspects is not None and len(aspects) > 0:
-                aspects = aspects[keep_indices]
-            
-            # Limit max detections
-            if len(boxes) > self.max_detections:
-                boxes = boxes[:self.max_detections]
-                scores = scores[:self.max_detections]
-                if aspects is not None:
-                    aspects = aspects[:self.max_detections]
-        
-        # Convert to original image coordinates
-        if len(boxes) > 0:
-            boxes = self._rescale_boxes(boxes, scale_factor, padding, original_shape)
-        
+        keep_indices = self._apply_nms(boxes_xyxy, scores)
+        final_boxes = boxes_xyxy[keep_indices]
+        final_scores = scores[keep_indices]
+
+        # Limit max detections
+        if len(final_boxes) > self.max_detections:
+            final_boxes = final_boxes[:self.max_detections]
+            final_scores = final_scores[:self.max_detections]
+
+        # Rescale boxes to original image coordinates
+        if len(final_boxes) > 0:
+            final_boxes = self._rescale_boxes(final_boxes, scale_factor, padding, original_shape)
+
         result = {
-            'boxes': boxes.cpu().numpy() if len(boxes) > 0 else np.empty((0, 4)),
-            'scores': scores.cpu().numpy() if len(scores) > 0 else np.empty(0),
-            'num_detections': len(boxes)
+            'boxes': final_boxes.cpu().numpy(),
+            'scores': final_scores.cpu().numpy(),
+            'num_detections': len(final_boxes)
         }
-        
-        if aspects is not None and len(aspects) > 0:
-            result['aspects'] = aspects.cpu().numpy()
-        
         return result
-    
-    def _decode_anchor_free_predictions(self, predictions: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Decode YOLO-One anchor-free predictions
-        
-        Args:
-            predictions: List of prediction tensors [P3, P4, P5]
-            
-        Returns:
-            Tuple of (boxes, scores) tensors
-        """
-        
-        all_boxes = []
-        all_scores = []
-        
-        # YOLO-One anchor-free decoding for each scale
-        strides = [8, 16, 32]  # P3, P4, P5 strides
-        
-        for pred, stride in zip(predictions, strides):
-            # pred shape: [1, 5, H, W] for anchor-free YOLO-One
-            batch_size, channels, height, width = pred.shape
-            
-            if channels != 5:
-                print(f"Warning: Expected 5 channels for anchor-free, got {channels}")
-                continue
-            
-            # Reshape: [1, 5, H, W] -> [H*W, 5]
-            pred = pred.squeeze(0).permute(1, 2, 0).reshape(-1, 5)
-            
-            # Generate grid coordinates
-            grid_y, grid_x = torch.meshgrid(
-                torch.arange(height, device=self.device),
-                torch.arange(width, device=self.device),
-                indexing='ij'
-            )
-            grid = torch.stack([grid_x, grid_y], dim=-1).float().reshape(-1, 2)
-            
-            # Decode boxes (anchor-free)
-            xy = torch.sigmoid(pred[:, :2]) + grid  # Relative to grid cell
-            wh = torch.exp(pred[:, 2:4])           # Exponential for width/height
-            
-            # Convert to input image coordinates
-            xy = xy * stride
-            wh = wh * stride
-            
-            # Normalize to [0, 1] coordinates
-            xy = xy / self.input_size
-            wh = wh / self.input_size
-            
-            # Convert to corner format (x1, y1, x2, y2)
-            x1 = xy[:, 0] - wh[:, 0] / 2
-            y1 = xy[:, 1] - wh[:, 1] / 2
-            x2 = xy[:, 0] + wh[:, 0] / 2
-            y2 = xy[:, 1] + wh[:, 1] / 2
-            
-            boxes = torch.stack([x1, y1, x2, y2], dim=-1)
-            scores = torch.sigmoid(pred[:, 4])  # Confidence scores
-            
-            all_boxes.append(boxes)
-            all_scores.append(scores)
-        
-        # Concatenate all scales
-        if all_boxes:
-            all_boxes = torch.cat(all_boxes, dim=0)
-            all_scores = torch.cat(all_scores, dim=0)
-        else:
-            all_boxes = torch.empty(0, 4, device=self.device)
-            all_scores = torch.empty(0, device=self.device)
-        
-        return all_boxes, all_scores
-    
-    def _extract_aspect_ratios(self, aspect_preds: List[torch.Tensor]) -> torch.Tensor:
-        """Extract aspect ratios from aspect head predictions"""
-        
-        all_aspects = []
-        
-        for pred in aspect_preds:
-            # pred shape: [1, 1, H, W]
-            pred = pred.squeeze(0).squeeze(0).reshape(-1)  # Flatten
-            all_aspects.append(pred)
-        
-        if all_aspects:
-            return torch.cat(all_aspects, dim=0)
-        else:
-            return torch.empty(0, device=self.device)
     
     def _apply_nms(self, boxes: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
         """Apply Non-Maximum Suppression"""
