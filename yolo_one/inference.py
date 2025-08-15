@@ -11,9 +11,8 @@ import torch
 import torch.nn as nn
 import cv2
 import numpy as np
-from typing import List, Dict, Tuple, Optional, Union
+from typing import List, Dict, Tuple, Union
 import time
-from pathlib import Path
 import logging
 
 # Import your YOLO-One model
@@ -355,11 +354,9 @@ class YoloOneInference:
         """
         # The 'decoded' key contains a list of tensors [B, 5, Hk, Wk]
         # where 5 is (x_c, y_c, w, h, conf), all normalized to image size.
-        decoded_preds = predictions['decoded']
-
         # Concatenate predictions from all levels
-        # [B, 5, H, W] -> [B, H, W, 5] -> [B, N, 5]
-        all_preds = [p.permute(0, 2, 3, 1).reshape(p.shape[0], -1, 5) for p in decoded_preds]
+        # [B, 5, H, W] -> [B, H, W, 5] -> [B, N, 5]        
+        all_preds = [p.permute(0, 2, 3, 1).reshape(p.shape[0], -1, 5) for p in predictions['decoded']]
         preds = torch.cat(all_preds, dim=1).squeeze(0)  # [N, 5] for a single image
 
         # Filter by confidence
@@ -593,15 +590,15 @@ if __name__ == "__main__":
     
     # Initialize YOLO-One inference engine
     inference_engine = create_yolo_one_inference(
-        model_path="/home/ibra/Documents/iatrax/YOLO-One/runs/train_20250615_210453/final_model.pt",
+        model_path="/home/ibra/Documents/iatrax/YOLO-One/runs/train_20250813_123730/final_model.pt",
         device="cuda",
-        confidence_threshold=0.25,
-        nms_threshold=0.45
+        confidence_threshold=0.05,
+        nms_threshold=0.15
     )
     
     # Single image prediction
     results = inference_engine.predict_image(
-        "/home/ibra/Documents/iatrax/YOLO-One/datasets/images/test/The-Curve-Atrium_mp4-8_jpg.rf.d21b38d61f9f727604859cd2274761e2.jpg", 
+        "/home/ibra/Documents/iatrax/YOLO-One/datasets_test/images/train/img1.jpg", 
         return_crops=True,
         visualize=True
     )
@@ -609,12 +606,7 @@ if __name__ == "__main__":
     print(f"Detected {results['num_detections']} objects")
     print(f"Inference time: {results['inference_time']*1000:.2f}ms")
     img_save = results['visualization']
-    cv2.imwrite('output.jpg', img_save)
-    
-    # Batch prediction
-    #image_list = ["img1.jpg", "img2.jpg", "img3.jpg"]
-    #batch_results = inference_engine.predict_batch(image_list, batch_size=4)
-    
+    cv2.imwrite('output1.jpg', img_save)
     # Performance statistics
     stats = inference_engine.get_performance_stats()
     print(f"Average FPS: {stats['fps']:.1f}")
