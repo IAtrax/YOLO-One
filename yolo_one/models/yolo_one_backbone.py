@@ -3,142 +3,75 @@ Iatrax Team - 2025 - https://iatrax.com
 
 LICENSE: MIT
 
-REFACTORED BACKBONE MODULE FOR YOLO-ONE
+BACKBONE MODULE FOR YOLO-ONE
 """
 import torch
 import torch.nn as nn
 from typing import List, Dict, Any
+from yolo_one.models.common import Conv, CSPBlock, SpatialAttention
+from yolo_one.configs.config import MODEL_SIZE_MULTIPLIERS as size_multipliers
 
-# --- Building Blocks ---
-
-class Conv(nn.Module):
-    """Standard Convolution Block: Conv2d + BatchNorm2d + SiLU activation."""
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, stride: int = 1):
-        super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride,
-                              padding=kernel_size // 2, bias=False)
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.act = nn.SiLU(inplace=True)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.act(self.bn(self.conv(x)))
-
-class Bottleneck(nn.Module):
-    """
-    Standard Bottleneck block with residual connection.
-    Reduces channels with a 1x1 conv, applies a 3x3 conv, then restores channels.
-    """
-    def __init__(self, in_channels: int, out_channels: int, shortcut: bool = True,
-                 expansion: float = 0.5):
-        super().__init__()
-        hidden_channels = int(out_channels * expansion)
-        self.cv1 = Conv(in_channels, hidden_channels, kernel_size=1)
-        self.cv2 = Conv(hidden_channels, out_channels, kernel_size=3)
-        self.use_residual = shortcut and in_channels == out_channels
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # If residual is possible, add input to output, otherwise just return output
-        return x + self.cv2(self.cv1(x)) if self.use_residual else self.cv2(self.cv1(x))
-
-class CSPBlock(nn.Module):
-    """
-    Cross Stage Partial (CSP) block with two branches.
-    - Branch 1: Goes through bottleneck blocks.
-    - Branch 2: Is passed through directly.
-    The two branches are then concatenated.
-    """
-    def __init__(self, in_channels: int, out_channels: int, num_blocks: int = 1,
-                 shortcut: bool = True, expansion: float = 0.5):
-        super().__init__()
-        hidden_channels = int(out_channels * expansion)
-        # Main convolution for the entire block
-        self.cv1 = Conv(in_channels, hidden_channels, kernel_size=1)
-        # The "shortcut" branch
-        self.cv2 = Conv(in_channels, hidden_channels, kernel_size=1)
-        # The branch with bottleneck transformations
-        self.bottlenecks = nn.Sequential(
-            *[Bottleneck(hidden_channels, hidden_channels, shortcut, expansion=1.0) for _ in range(num_blocks)]
-        )
-        # Final convolution to merge the two branches
-        self.cv3 = Conv(2 * hidden_channels, out_channels, kernel_size=1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # The main branch passes through the bottlenecks
-        main_branch = self.bottlenecks(self.cv1(x))
-        # The shortcut branch is a simple convolution
-        shortcut_branch = self.cv2(x)
-        # Concatenate and merge
-        return self.cv3(torch.cat((main_branch, shortcut_branch), dim=1))
-
-class SpatialAttention(nn.Module):
-    """Spatial attention module for single-class focus"""
-    def __init__(self, kernel_size: int = 7):
-        super().__init__()
-        self.conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        avg_pool = torch.mean(x, dim=1, keepdim=True)
-        max_pool, _ = torch.max(x, dim=1, keepdim=True)
-        attention = self.sigmoid(self.conv(torch.cat([avg_pool, max_pool], dim=1)))
-        return x * attention
 
 # --- Main Backbone ---
 
 class YoloOneBackbone(nn.Module):
     """
-    Refactored YOLO-One Backbone.
-    This backbone is built dynamically based on a configuration dictionary,
-    making it highly flexible and easy to experiment with.
+    YOLO-One Backbone!
+    The backbone is built dynamically based on a configuration dictionary,
     """
     def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the YOLO-One Backbone.
+
+        Args:
+        - config (Dict[str, Any]): Configuration dictionary for the backbone.
+        """
         super().__init__()
-        self.config = config
-        
-        # Initial stem layer
+        self.config = config        
         self.stem = Conv(3, config['channels'][0], kernel_size=6, stride=2)
-        
-        # Build the main stages of the backbone in a loop
         self.layers = nn.ModuleList()
         in_ch = config['channels'][0]
-        
         for i, (out_ch, num_blocks, use_csp) in enumerate(config['stages']):
-            # Downsampling layer
             self.layers.append(Conv(in_ch, config['channels'][i], kernel_size=3, stride=2))
             in_ch = config['channels'][i]
-            
             # CSP or Conv stage
             if use_csp:
                 stage = CSPBlock(in_ch, out_ch, num_blocks=num_blocks)
             else:
-                stage = Conv(in_ch, out_ch, kernel_size=3, stride=1) # Stride is 1 as downsampling is separate
+                stage = Conv(in_ch, out_ch, kernel_size=3, stride=1) 
             self.layers.append(stage)
             in_ch = out_ch
 
-        # Spatial attention for the final feature map
-        self.spatial_attention = SpatialAttention()
-        
-        # Define which feature maps to return for the neck
         # The output indices now need to be mapped to the new `layers` structure
         self.output_indices = [idx * 2 + 1 for idx in config['output_indices']]
         self.out_channels = [config['stages'][i][0] for i in config['output_indices']]
 
+        # Create a separate attention layer for each output feature map.
+        # This allows each scale to learn its own spatial focus.
+        self.attention_layers = nn.ModuleList([SpatialAttention() for _ in self.output_indices])
+
         self._initialize_weights()
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+        """
+        Forward pass through the YOLO-One backbone.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            List[torch.Tensor]: List of output tensors, each from a different scale.
+        """
         outputs = []
-        x = self.stem(x)
-        
-        # Pass input through all layers
+        x = self.stem(x)        
+        output_count = 0    
         for i, layer in enumerate(self.layers):
             x = layer(x)
             # If the index of this layer is one of our desired outputs, save it
             if i in self.output_indices:
-                outputs.append(x)
-
-        # Apply spatial attention to the last output
-        if outputs:
-            outputs[-1] = self.spatial_attention(outputs[-1])
+                attended_x = self.attention_layers[output_count](x)
+                outputs.append(attended_x)
+                output_count += 1
         
         return outputs
 
@@ -164,17 +97,18 @@ def _make_divisible(value: float, divisor: int = 8) -> int:
 
 def create_yolo_one_backbone(model_size: str = 'nano') -> YoloOneBackbone:
     """
-    Factory function to create a YOLO-One backbone of a specific size.
+    Create a YOLO-One backbone.
 
-    This function defines the architecture configurations and passes the
-    correct one to the YoloOneBackbone class.
+    Args:
+        model_size: str - Size like 'nano' (defines width/depth multipliers).
+        multipliers: dict - Mapping of sizes to {'width': float, 'depth': float}.
+        base_channels: List[int] - Base channel counts for scaling.
+
+    Raises:
+        ValueError: If model_size not in multipliers.
+   
     """
-    size_multipliers = {
-        'nano':   {'width': 0.25, 'depth': 0.33},
-        'small':  {'width': 0.50, 'depth': 0.33},
-        'medium': {'width': 0.75, 'depth': 0.67},
-        'large':  {'width': 1.00, 'depth': 1.00},
-    }
+   
     if model_size not in size_multipliers:
         raise ValueError(f"Model size '{model_size}' not supported.")
 

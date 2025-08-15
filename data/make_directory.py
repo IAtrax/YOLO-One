@@ -646,6 +646,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+out/
 
 # PyInstaller
 *.manifest
@@ -702,10 +703,6 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
-
-# Build directories
-build/
-out/
 '''
 
 def get_license_template():

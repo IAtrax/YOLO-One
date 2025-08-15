@@ -35,16 +35,6 @@ class YoloOnePostProcessor:
         self.iou_threshold = iou_threshold
         self.max_detections = max_detections
         self.input_size = input_size
-        
-        # Grid sizes for each scale
-        self.grid_sizes = [
-            (input_size[0] // 8, input_size[1] // 8),    # P3: 80x80
-            (input_size[0] // 16, input_size[1] // 16),  # P4: 40x40  
-            (input_size[0] // 32, input_size[1] // 32)   # P5: 20x20
-        ]
-        
-        # Stride for each scale
-        self.strides = [8, 16, 32]
     
     def process_batch(
         self, 
@@ -55,7 +45,8 @@ class YoloOnePostProcessor:
         Process a batch of predictions
         
         Args:
-            predictions: List of prediction tensors [P3, P4, P5]
+            predictions: List of DECODED prediction tensors from the model head.
+                         Each tensor is [B, 5, H, W] -> (xc, yc, w, h, conf).
             original_shapes: Original image shapes for rescaling
             
         Returns:
@@ -66,10 +57,14 @@ class YoloOnePostProcessor:
         
         for batch_idx in range(batch_size):
             # Extract predictions for this image
-            image_predictions = [pred[batch_idx] for pred in predictions]
-            
+            # The decoded output is already per-image, just need to extract it
+            image_predictions = [pred[batch_idx:batch_idx+1] for pred in predictions]
+
+            # Flatten and concatenate all predictions for the current image
+            preds = [p.permute(0, 2, 3, 1).reshape(-1, 5) for p in image_predictions]
+            all_preds = torch.cat(preds, dim=0)
             # Process single image
-            detections = self.process_single_image(image_predictions)
+            detections = self.process_single_image(all_preds)
             
             # Rescale to original image size if provided
             if original_shapes is not None:
@@ -83,94 +78,37 @@ class YoloOnePostProcessor:
         
         return batch_results
     
-    def process_single_image(self, predictions: List[torch.Tensor]) -> Dict:
+    def process_single_image(self, predictions: torch.Tensor) -> Dict:
         """
         Process predictions for a single image
         
         Args:
-            predictions: List of prediction tensors for one image
+            predictions: A tensor of [N, 5] decoded predictions (xc, yc, w, h, conf)
             
         Returns:
             Dictionary with processed detections
         """
-        # Convert predictions to detection format
-        all_detections = []
-        
-        for scale_idx, pred in enumerate(predictions):
-            scale_detections = self.decode_predictions(pred, scale_idx)
-            all_detections.append(scale_detections)
-        
-        # Concatenate all scales
-        if all_detections:
-            detections = torch.cat(all_detections, dim=0)
-        else:
-            detections = torch.empty(0, 6)
-        
         # Apply confidence filtering
-        detections = self.filter_by_confidence(detections)
-        
-        # Apply Non-Maximum Suppression
-        detections = self.apply_nms(detections)
-        
-        # Format output
-        return self.format_detections(detections)
-    
-    def decode_predictions(self, pred: torch.Tensor, scale_idx: int) -> torch.Tensor:
-        """
-        Decode predictions from grid format to absolute coordinates
-        
-        Args:
-            pred: Prediction tensor [6, H, W]
-            scale_idx: Scale index (0=P3, 1=P4, 2=P5)
-            
-        Returns:
-            Decoded detections [N, 6] (x1, y1, x2, y2, conf, class_prob)
-        """
-        device = pred.device
-        channels, grid_h, grid_w = pred.shape
-        stride = self.strides[scale_idx]
-        
-        # Create grid coordinates
-        grid_y, grid_x = torch.meshgrid(
-            torch.arange(grid_h, device=device),
-            torch.arange(grid_w, device=device),
-            indexing='ij'
-        )
-        
-        # Extract predictions
-        # The model outputs: [x_center, y_center, width, height, confidence]
-        center_x = pred[0]        # [H, W]
-        center_y = pred[1]        # [H, W]
-        width = pred[2]           # [H, W]
-        height = pred[3]          # [H, W]
-        confidence = pred[4]      # [H, W]
+        confident_preds = self.filter_by_confidence(predictions)
 
-        # In a single-class scenario, class_prob is the same as confidence
-        class_prob = confidence
+        if confident_preds.shape[0] == 0:
+            return self.format_detections(torch.empty(0, 6))
+
+        # Convert to corner format for NMS
+        boxes_xywh = confident_preds[:, :4]
+        scores = confident_preds[:, 4]
         
-        # Convert relative coordinates to absolute
-        abs_center_x = (grid_x + center_x) * stride
-        abs_center_y = (grid_y + center_y) * stride
-        abs_width = width * self.input_size[1]
-        abs_height = height * self.input_size[0]
-        
-        # Convert center format to corner format
-        x1 = abs_center_x - abs_width / 2
-        y1 = abs_center_y - abs_height / 2
-        x2 = abs_center_x + abs_width / 2
-        y2 = abs_center_y + abs_height / 2
-        
-        # Stack all predictions
-        detections = torch.stack([
-            x1.flatten(),
-            y1.flatten(), 
-            x2.flatten(),
-            y2.flatten(),
-            confidence.flatten(),
-            class_prob.flatten()
-        ], dim=1)
-        
-        return detections
+        boxes_xyxy = torch.empty_like(boxes_xywh)
+        boxes_xyxy[:, 0] = boxes_xywh[:, 0] - boxes_xywh[:, 2] / 2
+        boxes_xyxy[:, 1] = boxes_xywh[:, 1] - boxes_xywh[:, 3] / 2
+        boxes_xyxy[:, 2] = boxes_xywh[:, 0] + boxes_xywh[:, 2] / 2
+        boxes_xyxy[:, 3] = boxes_xywh[:, 1] + boxes_xywh[:, 3] / 2
+
+        # Apply Non-Maximum Suppression
+        final_detections = self.apply_nms(torch.cat([boxes_xyxy, scores.unsqueeze(1), scores.unsqueeze(1)], dim=1))
+
+        # Format output
+        return self.format_detections(final_detections)
     
     def filter_by_confidence(self, detections: torch.Tensor) -> torch.Tensor:
         """
