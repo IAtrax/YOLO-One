@@ -1,3 +1,4 @@
+
 """
 IAtrax Team - 2025 - https://iatrax.com
 
@@ -155,7 +156,7 @@ class YoloOneTrainer:
             obj_weight=loss_config.get('obj_weight', 1.0),
             focal_alpha=loss_config.get('focal_alpha', 0.25),
             focal_gamma=loss_config.get('focal_gamma', 1.5),
-            iou_type=loss_config.get('iou_type', 'ciou'),
+            iou_type=loss_config.get('iou_type', 'meiou'),
             label_smoothing=loss_config.get('label_smoothing', 0.0),
             p5_weight_boost=loss_config.get('p5_weight_boost', 1.2)
         )
@@ -614,7 +615,16 @@ def main():
         results = trainer.train()
         print(f"\n🎉 Training successful!")
         print(f"Best mAP: {results['best_map']:.4f}")
+<<<<<<< HEAD
+<<<<<<< HEAD
+        print(f"Final model saved in: {trainer.run_dir}")
+        print(f'The box loss function used in this model is : {args.iou_type}')
+=======
         print(f"Final model saved to: {trainer.run_dir}")
+>>>>>>> main
+=======
+        print(f"Final model saved to: {trainer.run_dir}")
+>>>>>>> ec9cad888307fe53215004878e7d221c94724b44
         
     except KeyboardInterrupt:
         print("\n❌ Training interrupted by user")
