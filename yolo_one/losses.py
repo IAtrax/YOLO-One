@@ -5,6 +5,7 @@ LICENSE: MIT
 
 YOLO-ONE LOSS MODULE - ANCHOR-FREE
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,7 +25,7 @@ class YoloOneLoss(nn.Module):
         shape_conf_weight: float = 0.2,
         focal_alpha: float = 0.25,
         focal_gamma: float = 1.5,
-        iou_type: str = 'ciou',
+        iou_type: str = 'meiou',
         label_smoothing: float = 0.0,
         p5_weight_boost: float = 1.2
     ):
@@ -435,7 +436,7 @@ class YoloOneLoss(nn.Module):
         pw, ph = px2 - px1, py2 - py1
         tw, th = tx2 - tx1, ty2 - ty1
 
-        v_aspect = (4 / (torch.pi**2)) * (torch.atan(tw / th) - torch.atan(pw / ph))**2
+        #v_aspect = (4 / (torch.pi**2)) * (torch.atan(tw / th) - torch.atan(pw / ph))**2
         v_absolute =  rho2_w / (wc2 + 1e-6) + rho2_h / (hc2 + 1e-6)
         #v_absolute = ((ph - th)**2 + (pw - tw)**2) / (c2+ 1e-6)
         
@@ -443,10 +444,10 @@ class YoloOneLoss(nn.Module):
         sigma = torch.sqrt(ew**2 + eh**2)
         delta_angle = 1 - 2 * torch.sin(torch.arcsin(torch.clamp(ch / (sigma + 1e-6), -1.0, 1.0)) - (torch.pi / 4))**2
 
-        v_co = lambda1 * v_aspect + lambda2 * v_absolute + lambda3 * delta_angle
-        alpha = v_co / ((1 - iou) + v_co + 1e-6)
+        #v_co = lambda1 * v_aspect + lambda2 * v_absolute + lambda3 * delta_angle
+        #alpha = v_co / ((1 - iou) + v_co + 1e-6)
 
-        meiou = iou - rho2_center / c2 - alpha * v_co #- 0.2 * delta_angle
+        meiou = iou - rho2_center / c2 - v_absolute - delta_angle #- 0.2 * delta_angle
 
         return (iou**self.focal_gamma)*(1 - meiou)
     
@@ -470,7 +471,7 @@ def create_yolo_one_loss(
     shape_conf_weight: float = 0.2,
     focal_alpha: float = 0.25,
     focal_gamma: float = 1.5,
-    iou_type: str = 'ciou',
+    iou_type: str = 'meiou',
     label_smoothing: float = 0.0,
     p5_weight_boost: float = 1.2
 ) -> YoloOneLoss:
