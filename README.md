@@ -225,6 +225,17 @@ python train.py \
     --resume runs/train_20250615_120000/best_model.pt
 ```
 
+## Inference Pipeline
+to launch the inference pipepline, use de following command:
+
+```python
+python inference.py \
+    --model runs/train_date/best_model.pt \
+    --device cuda
+    --image path/to/test/image
+    --output path/to/save/predict/images
+```
+
 ## 🤝 Contributing
 
 We welcome contributions! Key areas:
