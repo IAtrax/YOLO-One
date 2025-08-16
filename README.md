@@ -142,7 +142,7 @@ output_channels = 4 + 1  # bbox + fused_confidence
 | Metric | Current (Nano) | Target (Optimized) | YOLOv8n Baseline |
 |--------|---------------|-------------------|------------------|
 | **Model Size** | ✅ 800KB | 500KB | 6.2MB |
-| **Parameters** | ✅ 150K | 85K | ~3M |
+| **Parameters** | ✅ 750K | 255K | ~3M |
 | **Inference (GPU)** | 140 FPS | 500+ FPS | ~110 FPS |
 | **Memory Usage** | <100MB | <50MB | ~2GB |
 | **Accuracy (mAP)** | TBD | Same | Baseline |
@@ -179,17 +179,16 @@ output_channels = 4 + 1  # bbox + fused_confidence
 
 ```python
 # Component breakdown
-Backbone:  ~80K params (82%)  # Feature extraction
-Neck:      ~10K params  (14%)  # Feature fusion  
+Backbone:  ~700K params (82%)  # Feature extraction
+Neck:      ~40K params  (14%)  # Feature fusion  
 Head:      ~1K params  (3%)   # Detection output
-Total:     ~91K params         # Ultra-lightweight
+Total:     ~750K params         # Ultra-lightweight
 ```
 
 ### Memory Efficiency
 
 ```python
 # Multi-resolution memory usage
-320x320: ~3MB GPU memory
 640x640: ~5MB GPU memory  
 # Scales efficiently with resolution
 ```
