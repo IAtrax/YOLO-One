@@ -35,21 +35,24 @@ While existing YOLO models excel at multi-class detection, **most real-world app
 ## 📊 Current Performance (YOLO-One Nano)
 
 ### 🏗️ Architecture Efficiency
-```
-Model Size:     0.8MB (vs 6.2MB YOLOv8n)     📦 7x smaller
-Parameters:      150K (vs ~3M YOLOv8n)         ⚡ 8x fewer params
+
+```markdown
+Model Size:     2MB (vs 6.2MB YOLOv8n)     📦 3x smaller
+Parameters:      750K (vs ~3M YOLOv8n)         ⚡ 4x fewer params
 Inference Time:  2.56ms (vs 9ms YOLOv8n)      📈 5x faster
 Channels:       5 per scale (vs 85 COCO)     🎯 Single-class optimized
 Memory Format:  Float32 (FP16/INT8 planned)  💾 Further optimization ready
 ```
 
 ### ⚡ Speed Benchmarks (Current)
+
 | Platform | Resolution | Current FPS | Target (Optimized) | Improvement Path |
 |----------|------------|-------------|-------------------|------------------|
 | **Development GPU** | 640x640 | **140 FPS** | 400+ FPS | +TensorRT +FP16 |
 | **Inference Time** | 640x640 | **2.56ms** | ~0.5ms | +Optimizations |
 
 ### 🎯 Optimization Roadmap
+
 ```python
 # Performance Projection Pipeline
 Current:    140 FPS   # PyTorch Float32
@@ -62,6 +65,7 @@ Mobile:     TBD                 # Core ML / TFLite
 ## 🌐 Platform Coverage (Planned)
 
 ### 📱 Mobile & IoT
+
 - **iOS**: Core ML export (in development)
 - **Android**: TensorFlow Lite export (in development)
 - **Edge Devices**: ONNX export ready
@@ -85,6 +89,7 @@ Mobile:     TBD                 # Core ML / TFLite
 ## 🛠️ Installation
 
 ### 🚀 Quick Start (Recommended)
+
 ```bash
 pip install git+https://github.com/IAtrax/YOLO-One.git
 # Run architecture test script to validate installation
@@ -133,6 +138,7 @@ output_channels = 4 + 1  # bbox + fused_confidence
 ## 📈 Benchmarks (In Development)
 
 ### Current vs Target Performance
+
 | Metric | Current (Nano) | Target (Optimized) | YOLOv8n Baseline |
 |--------|---------------|-------------------|------------------|
 | **Model Size** | ✅ 800KB | 500KB | 6.2MB |
@@ -141,17 +147,10 @@ output_channels = 4 + 1  # bbox + fused_confidence
 | **Memory Usage** | <100MB | <50MB | ~2GB |
 | **Accuracy (mAP)** | TBD | Same | Baseline |
 
-### 🔄 Multi-Resolution Support
-```python
-✅ 320x320: OK    # Fast inference
-✅ 416x416: OK    # Balanced 
-✅ 480x480: OK    # Good quality
-✅ 640x640: OK    # High quality
-```
-
 ## 🛠️ Development Status
 
 ### ✅ Completed
+
 - [x] **Core Architecture**: Backbone + Neck + Head
 - [x] **Multi-scale Detection**: P3, P4, P5 outputs  
 - [x] **Single-class Optimization**: 5-channel output
@@ -160,6 +159,7 @@ output_channels = 4 + 1  # bbox + fused_confidence
 - [x] **Multi-resolution**: 320-640px support
 
 ### 🚧 In Development
+
 - [ ] **Training Pipeline**: Loss function + trainer
 - [ ] **Benchmark Suite**: vs YOLOv8n comparison
 - [ ] **Export Pipeline**: ONNX, TensorRT, Core ML
@@ -167,6 +167,7 @@ output_channels = 4 + 1  # bbox + fused_confidence
 - [ ] **Documentation**: Complete API docs
 
 ### 🎯 Next Priorities
+
 1. **Training Pipeline** - Validate accuracy claims
 2. **TensorRT Export** - Achieve speed targets  
 3. **Benchmark Suite** - Automated comparisons
@@ -175,6 +176,7 @@ output_channels = 4 + 1  # bbox + fused_confidence
 ## 🔧 Technical Details
 
 ### Architecture Components
+
 ```python
 # Component breakdown
 Backbone:  ~80K params (82%)  # Feature extraction
@@ -184,6 +186,7 @@ Total:     ~91K params         # Ultra-lightweight
 ```
 
 ### Memory Efficiency
+
 ```python
 # Multi-resolution memory usage
 320x320: ~3MB GPU memory
@@ -195,45 +198,34 @@ Total:     ~91K params         # Ultra-lightweight
 
 to launch training pipeline, run the following command:
 
-```python
-python train.py \
-    --config configs/yolo_one_nano.yaml \
-    --data data/my_dataset.yaml \
-    --model-size nano \
-    --epochs 300 \
-    --batch-size 16 \
-    --device cuda
-```
-
 Train with custom parameters
 
 ```python
 python train.py \
-    --data data/my_dataset.yaml \
-    --model-size small \
+    --data path/to/dataset/directory \
+    --config path/to/config/file \
+    --model-size nano \
     --epochs 500 \
-    --batch-size 32 \
+    --batch-size 16 \
     --lr 0.001 \
-    --output-dir runs/experiment_1
-```
-
-Resume training
-
-```python
-python train.py \
-    --data data/my_dataset.yaml \
-    --resume runs/train_20250615_120000/best_model.pt
+    --output-dir path/to/output \
+    --device cuda
 ```
 
 ## Inference Pipeline
+
 to launch the inference pipepline, use de following command:
 
 ```python
-python inference.py \
-    --model runs/train_date/best_model.pt \
+python detect.py \
+    --source path/to/image.jpg \
+    --weights path/to/model.pt \
     --device cuda
-    --image path/to/test/image
-    --output path/to/save/predict/images
+    --output-dir runs/detect
+    --model-size nano
+    --input-size 640
+    --conf 0.5
+    --iou 0.5
 ```
 
 ## 🤝 Contributing
@@ -241,7 +233,7 @@ python inference.py \
 We welcome contributions! Key areas:
 
 - **Training Pipeline Development**
-- **Mobile Optimization** 
+- **Mobile Optimization**
 - **Benchmark Implementation**
 - **Documentation & Examples**
 - **Export Format Support**
@@ -251,23 +243,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🎯 Roadmap
-
-### Phase 1: Foundation (Current)
-- [x] Core architecture
-- [ ] Training pipeline
-- [ ] Basic benchmarks
-
-### Phase 2: Optimization (Q3 2025)
-- [ ] TensorRT integration
-- [ ] Mobile deployment
-- [ ] Performance validation
-
-### Phase 3: Production (Q4 2025)
-- [ ] Cloud deployment tools
-- [ ] Enterprise features
-- [ ] Community ecosystem
 
 ---
 

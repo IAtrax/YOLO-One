@@ -9,6 +9,7 @@ YOLO-ONE LOSS MODULE - ANCHOR-FREE
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from yolo_one.utils.general import box_cxcywh_to_xyxy
 from typing import List, Tuple, Dict, Optional
 
 class YoloOneLoss(nn.Module):
@@ -307,8 +308,8 @@ class YoloOneLoss(nn.Module):
         """Complete IoU loss implementation for anchor-free"""
         
         # Convert to corner format
-        pred_x1, pred_y1, pred_x2, pred_y2 = self._xywh_to_xyxy(pred_boxes)
-        target_x1, target_y1, target_x2, target_y2 = self._xywh_to_xyxy(target_boxes)
+        pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
+        target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
         
         # Intersection area
         inter_x1 = torch.max(pred_x1, target_x1)
@@ -369,7 +370,7 @@ class YoloOneLoss(nn.Module):
                     )-> torch.Tensor:
         
         px1, py1, px2, py2 = self._xywh_to_xyxy(pred_boxes)
-        tx1, ty1, tx2, ty2 = self._xywh_to_xyxy(target_boxes)
+        tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
 
         inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
         inter_x2, inter_y2 = torch.min(px2, tx2), torch.min(py2, ty2)
@@ -408,8 +409,8 @@ class YoloOneLoss(nn.Module):
                     )-> torch.Tensor:
         
 
-        px1, py1, px2, py2 = self._xywh_to_xyxy(pred_boxes)
-        tx1, ty1, tx2, ty2 = self._xywh_to_xyxy(target_boxes)
+        px1, py1, px2, py2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
+        tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
         
         inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
         inter_x2, inter_y2 = torch.min(px2, tx2), torch.min(py2, ty2)
@@ -452,17 +453,6 @@ class YoloOneLoss(nn.Module):
         return (iou**self.focal_gamma)*(1 - meiou)
     
     
-    
-
-    def _xywh_to_xyxy(self, boxes: torch.Tensor) -> Tuple[torch.Tensor, ...]:
-        """Convert center format to corner format"""
-        x, y, w, h = boxes.unbind(-1)
-        x1 = x - w / 2
-        y1 = y - h / 2
-        x2 = x + w / 2
-        y2 = y + h / 2
-        return x1, y1, x2, y2
-
 
 def create_yolo_one_loss(
     box_weight: float = 7.5,
