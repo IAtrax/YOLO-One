@@ -11,13 +11,11 @@ Utility functions for YOLO-One training
 
 import torch
 import torch.nn as nn
-from typing import Optional
 import copy
 import torch
 import random
 import numpy as np
 import logging
-import os
 from pathlib import Path
 
 

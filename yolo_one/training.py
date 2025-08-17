@@ -415,6 +415,7 @@ class YoloOneTrainer:
                 self.metrics.update(
                     predictions=decoded_preds_gpu, # Pass decoded GPU predictions
                     targets=targets, # Pass GPU targets
+                    input_size=images.shape[2:], # Pass input size for coordinate scaling
                     inference_time=inference_time / len(images)  # Per image
                 )
                 
@@ -582,15 +583,10 @@ def main():
     
     root_dir = Path(args.data)
     
-    # --- PERFORMANCE FIX: Analyze dataset ONCE before creating dataloaders ---
-    # This prevents scanning all label files multiple times.
     analyzer = YoloOneDatasetAnalyzer(root_dir)
-    # You can add a CLI argument `--target-class` to make this non-interactive
     target_class = analyzer.analyze_and_select_class(target_class=None)
-    # --- END OF FIX ---
-
-    # Create data loaders
-    # Added pin_memory=True for faster GPU transfers
+    
+    # Create dataloaders
     _, train_dataloader = create_yolo_one_dataset(
         root_dir=root_dir,
         split='train',
@@ -626,7 +622,6 @@ def main():
         results = trainer.train()
         print(f"\n🎉 Training successful!")
         print(f"Best mAP: {results['best_map']:.4f}")
-        print(f"The box loss function used in this model is : {config['loss'].get('iou_type', 'N/A')}")
         print(f"Final model saved to: {trainer.run_dir}")
         
     except KeyboardInterrupt:

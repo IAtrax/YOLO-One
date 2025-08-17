@@ -63,7 +63,9 @@ class SpatialAttention(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        avg_pool = torch.mean(x, dim=1, keepdim=True)
+        # torch.mean can upcast to float32 to preserve precision.
+        # We must cast it back to the input's dtype to avoid type mismatch in the following conv layer.
+        avg_pool = torch.mean(x, dim=1, keepdim=True).to(x.dtype)
         max_pool, _ = torch.max(x, dim=1, keepdim=True)
         attention = self.sigmoid(self.conv(torch.cat([avg_pool, max_pool], dim=1)))
         return x * attention
@@ -175,6 +177,8 @@ class GatingNetwork(nn.Module):
         """
         Forward pass to get gating scores.
         """
-        pooled_features = self.pool(x)
+        # AdaptiveAvgPool2d can upcast to float32. Cast back to input dtype
+        # to avoid mixed-precision errors in the following linear layers.
+        pooled_features = self.pool(x).to(x.dtype)
         flat_features = self.flatten(pooled_features)
         return self.gate(flat_features)

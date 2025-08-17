@@ -25,10 +25,10 @@ def show_image(title, image):
     Shows an image using rerun.
 
     Args:
-        title (str): The title of the image.
+        title (str): The entity path to log the image to.
         image (np.ndarray): The image to show.
     """
-    rr.log_image(title, image)
+    rr.log(title, rr.Image(image))
 
 def log_detections(image, boxes, labels, scores):
     """

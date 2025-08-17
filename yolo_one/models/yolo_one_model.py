@@ -39,7 +39,8 @@ class YoloOne(nn.Module):
                 features_for_head = []
                 for i, feat in enumerate(features_from_neck):
                     # Create a mask for the batch for this expert: [B, 1, 1, 1]
-                    score_mask = (gate_scores[:, i] > 0.5).float().view(-1, 1, 1, 1)
+                    # Cast mask to feature dtype to avoid mixed-precision errors
+                    score_mask = (gate_scores[:, i] > 0.5).to(feat.dtype).view(-1, 1, 1, 1)
                     # Multiply the feature map by the mask. Inactive items in batch become zero.
                     features_for_head.append(feat * score_mask)
             else:

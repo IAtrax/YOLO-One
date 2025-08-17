@@ -10,6 +10,7 @@ METRICS MODULE FOR YOLO-ONE
 import torch
 from typing import List
 from torchmetrics.detection import MeanAveragePrecision
+from typing import Tuple
 
 class YoloOneMetrics:
     """
@@ -31,7 +32,7 @@ class YoloOneMetrics:
             self.map_metric.reset()
         self.inference_times = []
     
-    def update(self, predictions: List[torch.Tensor], targets: torch.Tensor, **kwargs):
+    def update(self, predictions: List[torch.Tensor], targets: torch.Tensor, input_size: Tuple[int, int], **kwargs):
         """
         Update metrics with a batch of decoded predictions and targets.
 
@@ -39,6 +40,7 @@ class YoloOneMetrics:
             predictions (List[torch.Tensor]): List of decoded prediction tensors from different FPN levels.
                                               Each tensor is [B, 5, H, W] on the correct device.
             targets (torch.Tensor): Ground truth targets [N, 6] (batch_idx, class, xc, yc, w, h) on the correct device.
+            input_size (Tuple[int, int]): The (height, width) of the model input, for scaling targets.
         """
         if not self.map_metric:
             return
@@ -48,6 +50,9 @@ class YoloOneMetrics:
         # Predictions are already on the correct device
         all_preds = [p.permute(0, 2, 3, 1).reshape(p.shape[0], -1, 5) for p in predictions]
         batch_preds = torch.cat(all_preds, dim=1)  # [B, Total_N, 5]
+
+        # Get input size for scaling
+        h, w = input_size
 
         # Prepare data for torchmetrics
         preds_for_map = []
@@ -67,8 +72,14 @@ class YoloOneMetrics:
 
             # Filter targets for the current image
             target = targets[targets[:, 0] == i]
+            # Clone and scale target boxes from normalized [0,1] to pixel coordinates
+            target_boxes = target[:, 2:].clone() # [M, 4] in cxcywh format
+            target_boxes[:, 0] *= w # scale cx
+            target_boxes[:, 1] *= h # scale cy
+            target_boxes[:, 2] *= w # scale w
+            target_boxes[:, 3] *= h # scale h
             targets_for_map.append({
-                'boxes': target[:, 2:], # [M, 4] in cxcywh format
+                'boxes': target_boxes, # [M, 4] in cxcywh pixel format
                 'labels': torch.zeros(target.shape[0], device=self.device, dtype=torch.int32) # Single class
             })
 

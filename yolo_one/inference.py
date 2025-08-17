@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import cv2
 import numpy as np
-from typing import List, Dict, Tuple, Union
+from typing import List, Dict, Tuple, Union, Optional
 import time
 import logging
 
@@ -32,6 +32,8 @@ class YoloOneInference:
         confidence_threshold: float = 0.25,
         nms_threshold: float = 0.45,
         max_detections: int = 2,
+        model_size: str = 'nano',
+        use_moe: bool = False,
         input_size: int = 640,
         half_precision: bool = True,
         warmup_iterations: int = 3
@@ -45,6 +47,8 @@ class YoloOneInference:
             confidence_threshold: Minimum confidence for detections
             nms_threshold: NMS threshold for duplicate removal
             max_detections: Maximum detections per image
+            model_size: Model size ('nano', 'small', etc.)
+            use_moe: Whether the model uses Mixture of Experts
             input_size: Model input size (square)
             half_precision: Use FP16 for faster inference
             warmup_iterations: GPU warmup iterations
@@ -54,6 +58,8 @@ class YoloOneInference:
         self.confidence_threshold = confidence_threshold
         self.nms_threshold = nms_threshold
         self.max_detections = max_detections
+        self.model_size = model_size
+        self.use_moe = use_moe
         self.input_size = input_size
         self.half_precision = half_precision and device == 'cuda'
         
@@ -67,6 +73,13 @@ class YoloOneInference:
         # Load YOLO-One model
         self.model = self._load_yolo_one_model(model_path)
         
+        # Events for accurate GPU timing
+        self.start_event = None
+        self.end_event = None
+        if self.device.type == 'cuda':
+            self.start_event = torch.cuda.Event(enable_timing=True)
+            self.end_event = torch.cuda.Event(enable_timing=True)
+
         # GPU warmup for optimal performance
         if warmup_iterations > 0 and device == 'cuda':
             self._warmup_gpu(warmup_iterations)
@@ -82,8 +95,32 @@ class YoloOneInference:
     def _load_yolo_one_model(self, model_path: str) -> nn.Module:
         """Load and prepare YOLO-One model for inference"""
         
-        model = YoloOne(model_size='nano')  # Adjust size as needed
-        model.load_state_dict(torch.load(model_path, map_location=self.device), strict=False)
+        model = YoloOne(model_size=self.model_size, use_moe=self.use_moe)  # Use configured model size
+
+        # This function is designed to load a lightweight model file (.pt) which
+        # contains only the model's state_dict, not a full training checkpoint.
+        # For inference, please use 'best_model.pt' or 'final_model.pt'.
+        state_dict = torch.load(model_path, map_location=self.device)
+
+        # --- Auto-detect MoE architecture from the state dictionary ---
+        is_moe_model_in_weights = any('gating_network' in k for k in state_dict.keys())
+
+        if self.use_moe != is_moe_model_in_weights:
+            logging.warning(
+                f"Model architecture mismatch detected. "
+                f"The weights file indicates a {'MoE' if is_moe_model_in_weights else 'standard'} model, "
+                f"but the '--use-moe' flag was set to {self.use_moe}. "
+                f"Overriding with the architecture found in the weights file."
+            )
+            self.use_moe = is_moe_model_in_weights
+
+        # Create the model with the correct architecture
+        model = YoloOne(model_size=self.model_size, use_moe=self.use_moe)
+
+        # Proactively handle weights saved from a compiled model by removing the '_orig_mod.' prefix.
+        cleaned_state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+        
+        model.load_state_dict(cleaned_state_dict, strict=True)
         # Prepare for inference
         model = model.to(self.device)
         model.eval()
@@ -104,14 +141,14 @@ class YoloOneInference:
         
         logging.info(f"Warming up GPU for {iterations} iterations...")
         
+        # Determine the target dtype from the model's first parameter for robustness
+        target_dtype = next(self.model.parameters()).dtype
+        
         dummy_input = torch.randn(
             1, 3, self.input_size, self.input_size, 
-            device=self.device
+            device=self.device,
+            dtype=target_dtype
         )
-        
-        if self.half_precision:
-            dummy_input = dummy_input.half()
-        
         with torch.no_grad():
             for _ in range(iterations):
                 _ = self.model(dummy_input)
@@ -144,11 +181,19 @@ class YoloOneInference:
         preprocessing_time = time.time() - start_time
         
         # YOLO-One inference
-        start_time = time.time()
         with torch.no_grad():
-            # Activate decoding directly in the model head
-            predictions = self.model(preprocessed_tensor, decode=True, img_size=preprocessed_tensor.shape[2:])
-        inference_time = time.time() - start_time
+            if self.device.type == 'cuda':
+                self.start_event.record()
+                predictions = self.model(preprocessed_tensor, decode=True, img_size=preprocessed_tensor.shape[2:])
+                self.end_event.record()
+                # Wait for the events to complete
+                torch.cuda.synchronize()
+                # elapsed_time returns time in milliseconds, convert to seconds
+                inference_time = self.start_event.elapsed_time(self.end_event) / 1000.0
+            else: # Fallback to standard timing for CPU
+                start_time = time.time()
+                predictions = self.model(preprocessed_tensor, decode=True, img_size=preprocessed_tensor.shape[2:])
+                inference_time = time.time() - start_time
         
         # Postprocessing
         start_time = time.time()
@@ -186,7 +231,12 @@ class YoloOneInference:
             results['crops'] = self._extract_crops(original_image, detections)
         
         if visualize:
-            results['visualization'] = self._visualize_detections(original_image, detections)
+            fps = 1.0 / inference_time if inference_time > 0 else 0
+            results['visualization'] = self._visualize_detections(
+                original_image, 
+                detections, 
+                fps=fps
+            )
         
         return results
     
@@ -245,10 +295,19 @@ class YoloOneInference:
         batch_tensor = torch.stack(preprocessed_tensors, dim=0)
         
         # YOLO-One batch inference
-        start_time = time.time()
         with torch.no_grad():
-            batch_predictions = self.model(batch_tensor, decode=True, img_size=batch_tensor.shape[2:])
-        inference_time = time.time() - start_time
+            if self.device.type == 'cuda':
+                self.start_event.record()
+                batch_predictions = self.model(batch_tensor, decode=True, img_size=batch_tensor.shape[2:])
+                self.end_event.record()
+                # Wait for the events to complete
+                torch.cuda.synchronize()
+                # elapsed_time returns time in milliseconds, convert to seconds
+                inference_time = self.start_event.elapsed_time(self.end_event) / 1000.0
+            else: # Fallback to standard timing for CPU
+                start_time = time.time()
+                batch_predictions = self.model(batch_tensor, decode=True, img_size=batch_tensor.shape[2:])
+                inference_time = time.time() - start_time
         
         # Process each image in batch
         results = []
@@ -359,8 +418,8 @@ class YoloOneInference:
         
         return crops
     
-    def _visualize_detections(self, image: np.ndarray, detections: Dict) -> np.ndarray:
-        """Create visualization with bounding boxes"""
+    def _visualize_detections(self, image: np.ndarray, detections: Dict, fps: Optional[float] = None) -> np.ndarray:
+        """Create visualization with bounding boxes and FPS"""
         
         vis_image = image.copy()
         boxes = detections['boxes']
@@ -376,6 +435,12 @@ class YoloOneInference:
             label = f'{score:.2f}'
             cv2.putText(vis_image, label, (x1, y1-10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        # Display FPS
+        if fps is not None:
+            fps_text = f"FPS: {fps:.1f}"
+            cv2.putText(vis_image, fps_text, (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
         
         return vis_image
     
@@ -414,6 +479,8 @@ def create_yolo_one_inference(
     device: str = 'cuda',
     confidence_threshold: float = 0.25,
     nms_threshold: float = 0.45,
+    use_moe: bool = False,
+    model_size: str = 'nano',
     input_size: int = 640,
     half_precision: bool = True
 ) -> YoloOneInference:
@@ -425,6 +492,8 @@ def create_yolo_one_inference(
         device: Computation device
         confidence_threshold: Detection confidence threshold
         nms_threshold: NMS IoU threshold
+        use_moe: Whether the model uses Mixture of Experts
+        model_size: Model size ('nano', 'small', etc.)
         input_size: Model input size
         half_precision: Use FP16 for speed optimization
         
@@ -437,6 +506,8 @@ def create_yolo_one_inference(
         device=device,
         confidence_threshold=confidence_threshold,
         nms_threshold=nms_threshold,
+        use_moe=use_moe,
+        model_size=model_size,
         input_size=input_size,
         half_precision=half_precision
     )
@@ -451,6 +522,8 @@ if __name__ == "__main__":
     parser.add_argument('--weights', type=str, required=True, help='Path to model weights file.')
     parser.add_argument('--source', type=str, required=True, help='Path to input image.')
     parser.add_argument('--output', type=str, default='output_inference.jpg', help='Path to save output image.')
+    parser.add_argument('--model-size', type=str, default='nano', help='Model size (e.g., nano, small).')
+    parser.add_argument('--use-moe',default=True, help='Enable Mixture of Experts during inference.')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use (e.g., cuda, cpu).')
     parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold.')
     parser.add_argument('--iou', type=float, default=0.45, help='IoU threshold for NMS.')
@@ -461,7 +534,9 @@ if __name__ == "__main__":
         model_path=args.weights,
         device=args.device,
         confidence_threshold=args.conf,
-        nms_threshold=args.iou
+        nms_threshold=args.iou,
+        model_size=args.model_size,
+        use_moe=args.use_moe
     )
     
     # Load the image before passing it to the engine
