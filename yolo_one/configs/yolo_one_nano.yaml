@@ -4,6 +4,8 @@ model:
   num_classes: 1
   width_multiple: 0.25
   depth_multiple: 0.33
+  use_moe: true
+
 
 training:
   epochs: 10

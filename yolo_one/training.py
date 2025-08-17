@@ -21,7 +21,6 @@ from datetime import datetime
 import argparse
 import warnings
 from tqdm.auto import tqdm  # Auto-detects notebook environment for clean progress bars
-import glob
 
 warnings.filterwarnings('ignore')
 
@@ -131,7 +130,8 @@ class YoloOneTrainer:
         
         # Create model with proper configuration
         model = YoloOne(
-            model_size=model_config.get('model_size', 'nano')
+            model_size=model_config.get('model_size', 'nano'),
+            use_moe=model_config.get('use_moe', True)
         )
         
         model = model.to(self.device)
@@ -158,7 +158,8 @@ class YoloOneTrainer:
             focal_gamma=loss_config.get('focal_gamma', 1.5),
             iou_type=loss_config.get('iou_type', 'meiou'),
             label_smoothing=loss_config.get('label_smoothing', 0.0),
-            p5_weight_boost=loss_config.get('p5_weight_boost', 1.2)
+            p5_weight_boost=loss_config.get('p5_weight_boost', 1.2),
+            moe_balance_weight=loss_config.get('moe_balance_weight', 0.05)
         )
         
         return criterion.to(self.device)
@@ -290,6 +291,7 @@ class YoloOneTrainer:
         running_loss = 0.0
         running_box_loss = 0.0
         running_obj_loss = 0.0
+        running_moe_loss = 0.0
         num_batches = len(self.train_dataloader)
         accumulate_batches = self.config['training'].get('accumulate_batches', 1)
         
@@ -344,6 +346,7 @@ class YoloOneTrainer:
             running_loss += loss_dict['total_loss'].item()
             running_box_loss += loss_dict['box_loss'].item()
             running_obj_loss += loss_dict['obj_loss'].item()
+            running_moe_loss += loss_dict.get('moe_balance_loss', torch.tensor(0.0)).item()
             
             current_lr = self.optimizer.param_groups[0]['lr']
 
@@ -351,7 +354,8 @@ class YoloOneTrainer:
             pbar.set_postfix(
                 loss=loss_dict['total_loss'].item(),
                 box_loss=loss_dict['box_loss'].item(),
-                obj_loss=loss_dict['obj_loss'].item()
+                obj_loss=loss_dict['obj_loss'].item(),
+                moe_loss=loss_dict.get('moe_balance_loss', torch.tensor(0.0)).item()
             )
             
         # Calculate epoch metrics
@@ -359,11 +363,13 @@ class YoloOneTrainer:
         avg_loss = running_loss / num_batches
         avg_box_loss = running_box_loss / num_batches
         avg_obj_loss = running_obj_loss / num_batches
+        avg_moe_loss = running_moe_loss / num_batches
         
         return {
             'total_loss': avg_loss,
             'box_loss': avg_box_loss,
             'obj_loss': avg_obj_loss,
+            'moe_balance_loss': avg_moe_loss,
             'epoch_time': epoch_time,
             'batches_per_second': num_batches / epoch_time
         }
@@ -440,7 +446,8 @@ class YoloOneTrainer:
                 f"Training Epoch [{epoch+1}] - "
                 f"Loss: {metrics.get('total_loss', 0):.4f} - "
                 f"Box Loss: {metrics.get('box_loss', 0):.4f} - "
-                f"Obj Loss: {metrics.get('obj_loss', 0):.4f}"
+                f"Obj Loss: {metrics.get('obj_loss', 0):.4f} - "
+                f"MoE Loss: {metrics.get('moe_balance_loss', 0):.4f}"
             )
 
     def _save_checkpoint(self, is_best: bool = False, filename: Optional[str] = None, only_model_state: bool = False):
@@ -526,7 +533,7 @@ def main():
     """Main training function"""
     
     parser = argparse.ArgumentParser(description='YOLO-One Training')
-    parser.add_argument('--config', type=str, default='configs/yolo_one_nano.yaml',
+    parser.add_argument('--config', type=str, default='./yolo_one/configs/yolo_one_nano.yaml',
                         help='Path to configuration file')
     parser.add_argument('--data', type=str, required=True,
                         help='Path to dataset root directory (e.g., datasets/)')
@@ -539,6 +546,8 @@ def main():
                         help='Override number of epochs')
     parser.add_argument('--lr', type=float, default=None,
                         help='Override learning rate')
+    parser.add_argument('--iou-type', type=str, default=None,
+                        help='Override IoU type for loss (e.g., ciou, meiou, eiou)')
     parser.add_argument('--device', type=str, default=None,
                         help='Training device (cuda/cpu)')
     parser.add_argument('--resume', type=str, default=None,
@@ -568,6 +577,8 @@ def main():
         config['training']['epochs'] = args.epochs
     if args.lr:
         config['optimizer']['optimizer']['learning_rate'] = args.lr
+    if args.iou_type:
+        config['loss']['iou_type'] = args.iou_type
     
     root_dir = Path(args.data)
     
@@ -615,7 +626,7 @@ def main():
         results = trainer.train()
         print(f"\n🎉 Training successful!")
         print(f"Best mAP: {results['best_map']:.4f}")
-        print(f'The box loss function used in this model is : {args.iou_type}')
+        print(f"The box loss function used in this model is : {config['loss'].get('iou_type', 'N/A')}")
         print(f"Final model saved to: {trainer.run_dir}")
         
     except KeyboardInterrupt:

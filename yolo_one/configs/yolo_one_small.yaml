@@ -1,31 +1,66 @@
-# YOLO-One Small Configuration
-
-# Model Architecture
-backbone:
-  type: "EfficientNet"
-  variant: "b0"
-  pretrained: true
-
-neck:
-  type: "PAFPN"
-  channels: [64, 128, 256]
-
-head:
-  type: "SingleClassHead"
-  channels: 64
+model:
+  model_size: small
+  input_size: 640
   num_classes: 1
+  width_multiple: 0.5
+  depth_multiple: 0.33
+  use_moe: true
 
-# Training Parameters
-epochs: 100
-batch_size: 32
-learning_rate: 0.001
-optimizer: "AdamW"
-scheduler: "CosineAnnealingLR"
 
-# Data Augmentation
+training:
+  epochs: 10
+  batch_size: 1
+  accumulate_batches: 1
+  mixed_precision: true
+  compile_model: true
+  use_ema: true
+  ema_decay: 0.9999
+
+loss:
+  box_weight: 7.5
+  obj_weight: 1.0
+  focal_alpha: 0.25
+  focal_gamma: 1.5
+  iou_type: ciou
+  label_smoothing: 0.0
+  p5_weight_boost: 1.2
+
+optimizer:
+  optimizer:
+    optimizer_type: adamw
+    learning_rate: 0.001
+    weight_decay: 0.0005
+    betas: [0.9, 0.999]
+    eps: 1.0e-08
+  scheduler:
+    scheduler_type: cosine
+    total_epochs: 300
+    warmup_epochs: 5
+    min_lr_ratio: 0.01
+
 augmentation:
   mosaic: 0.5
   mixup: 0.1
+  copy_paste: 0.1
   hsv_h: 0.015
   hsv_s: 0.7
   hsv_v: 0.4
+  degrees: 0.0
+  translate: 0.1
+  scale: 0.5
+  shear: 0.0
+  perspective: 0.0
+  flipud: 0.0
+  fliplr: 0.5
+
+metrics:
+  iou_thresholds: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+  confidence_threshold: 0.25
+  nms_threshold: 0.45
+  max_detections: 300
+
+validation:
+  val_interval: 10
+  save_best: true
+  patience: 50
+  min_delta: 0.001

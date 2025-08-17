@@ -1,10 +1,14 @@
 """
+Iatrax Team - 2025 - https://iatrax.com
+
+LICENSE: MIT
+
 Hyperparameter configuration for YOLO-One training
 Optimized configurations for different scenarios
 """
 
 import yaml
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from pathlib import Path
 
 

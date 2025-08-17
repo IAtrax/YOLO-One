@@ -25,6 +25,7 @@ class YoloOneLoss(nn.Module):
         aspect_weight: float = 0.5,
         shape_conf_weight: float = 0.2,
         focal_alpha: float = 0.25,
+        moe_balance_weight: float = 0.05,
         focal_gamma: float = 1.5,
         iou_type: str = 'meiou',
         label_smoothing: float = 0.0,
@@ -37,6 +38,7 @@ class YoloOneLoss(nn.Module):
         self.aspect_weight = aspect_weight
         self.shape_conf_weight = shape_conf_weight
         self.focal_alpha = focal_alpha
+        self.moe_balance_weight = moe_balance_weight
         self.focal_gamma = focal_gamma
         self.iou_type = iou_type
         self.label_smoothing = label_smoothing
@@ -68,9 +70,21 @@ class YoloOneLoss(nn.Module):
         # Initialize losses
         loss_box = torch.zeros(1, device=device)
         loss_obj = torch.zeros(1, device=device)
-        loss_aspect = torch.zeros(1, device=device)
-        loss_shape_conf = torch.zeros(1, device=device)
+        loss_moe_balance = torch.zeros(1, device=device)
+        # The following losses are disabled as the current head does not produce these outputs
+        # loss_aspect = torch.zeros(1, device=device)
+        # loss_shape_conf = torch.zeros(1, device=device)
         
+        # --- MoE Load Balancing Loss ---
+        if self.moe_balance_weight > 0 and 'gate_scores' in predictions:
+            gate_scores = predictions.get('gate_scores')
+            if gate_scores is not None:
+                num_experts = gate_scores.shape[1]
+                load_per_expert = gate_scores.sum(dim=0)
+                # Calculate the coefficient of variation squared, a common load balancing loss
+                # We multiply by num_experts as a heuristic to keep the loss magnitude stable
+                loss_moe_balance = (load_per_expert.var() / (load_per_expert.mean()**2 + 1e-8)) * num_experts
+
         # Scale information
         scales = [
             {'stride': 8, 'size': 80},   # P3
@@ -82,8 +96,8 @@ class YoloOneLoss(nn.Module):
         for scale_idx, scale_info in enumerate(scales):
             
             detections = predictions['detections'][scale_idx]
-            aspects = predictions['aspects'][scale_idx]
-            shape_confs = predictions['shape_confidences'][scale_idx]
+            # aspects = predictions.get('aspects', [None]*3)[scale_idx]
+            # shape_confs = predictions.get('shape_confidences', [None]*3)[scale_idx]
             
             batch_size, _, height, width = detections.shape
             
@@ -95,8 +109,8 @@ class YoloOneLoss(nn.Module):
             # Extract predictions
             pred_boxes = detections[:, :4]  # [B, 4, H, W]
             pred_conf = detections[:, 4]    # [B, H, W]
-            pred_aspects = aspects[:, 0]    # [B, H, W]
-            pred_shape_conf = shape_confs[:, 0]  # [B, H, W]
+            # pred_aspects = aspects[:, 0] if aspects is not None else None
+            # pred_shape_conf = shape_confs[:, 0] if shape_confs is not None else None
             
             # Extract targets
             target_boxes = scale_targets[:, :, :, :4]  # [B, H, W, 4]
@@ -127,29 +141,29 @@ class YoloOneLoss(nn.Module):
             obj_loss = self._compute_objectness_loss(pred_conf, target_conf, obj_mask)
             loss_obj += obj_loss * self.obj_weight
             
-            # Aspect ratio loss
-            if aspect_targets is not None and box_mask.sum() > 0:
-                aspect_loss = self._compute_aspect_loss(
-                    pred_aspects[box_mask], aspect_targets[box_mask]
-                )
-                loss_aspect += aspect_loss * self.aspect_weight
+            # # Aspect ratio loss (disabled)
+            # if pred_aspects is not None and aspect_targets is not None and box_mask.sum() > 0:
+            #     aspect_loss = self._compute_aspect_loss(
+            #         pred_aspects[box_mask], aspect_targets[box_mask]
+            #     )
+            #     loss_aspect += aspect_loss * self.aspect_weight
             
-            # Shape confidence loss
-            shape_conf_targets = obj_mask.float()
-            shape_conf_loss = self._compute_shape_confidence_loss(
-                pred_shape_conf, shape_conf_targets
-            )
-            loss_shape_conf += shape_conf_loss * self.shape_conf_weight
+            # # Shape confidence loss (disabled)
+            # if pred_shape_conf is not None:
+            #     shape_conf_targets = obj_mask.float()
+            #     shape_conf_loss = self._compute_shape_confidence_loss(
+            #         pred_shape_conf, shape_conf_targets
+            #     )
+            #     loss_shape_conf += shape_conf_loss * self.shape_conf_weight
         
         # Total loss
-        total_loss = loss_box + loss_obj + loss_shape_conf #+ loss_aspect 
+        total_loss = loss_box + loss_obj + (loss_moe_balance * self.moe_balance_weight)
         
         return {
             'total_loss': total_loss,
             'box_loss': loss_box,
             'obj_loss': loss_obj,
-            'aspect_loss': loss_aspect,
-            'shape_conf_loss': loss_shape_conf,
+            'moe_balance_loss': loss_moe_balance,
             'avg_loss': total_loss.item()
         }
     
@@ -460,6 +474,7 @@ def create_yolo_one_loss(
     aspect_weight: float = 0.5,
     shape_conf_weight: float = 0.2,
     focal_alpha: float = 0.25,
+    moe_balance_weight: float = 0.05,
     focal_gamma: float = 1.5,
     iou_type: str = 'meiou',
     label_smoothing: float = 0.0,
@@ -472,6 +487,7 @@ def create_yolo_one_loss(
         aspect_weight=aspect_weight,
         shape_conf_weight=shape_conf_weight,
         focal_alpha=focal_alpha,
+        moe_balance_weight=moe_balance_weight,
         focal_gamma=focal_gamma,
         iou_type=iou_type,
         label_smoothing=label_smoothing,
