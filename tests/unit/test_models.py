@@ -25,7 +25,7 @@ def test_yolo_one_forward():
         with torch.no_grad():
             outputs = model(random_input)
         
-        assert 'preds' in outputs
+        assert 'detections' in outputs
         assert 'obj_logits' in outputs
         assert 'bbox' in outputs
         
@@ -62,7 +62,7 @@ def test_individual_components():
         with torch.no_grad():
             head_out = head(neck_out)
         assert isinstance(head_out, dict)
-        assert 'preds' in head_out
+        assert 'detections' in head_out
         
     except Exception as e:
         pytest.fail(f"Component test failed with exception: {e}")

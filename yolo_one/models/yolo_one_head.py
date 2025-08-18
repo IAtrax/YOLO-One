@@ -34,28 +34,28 @@ class DecoupledHeadPerLevel(nn.Module):
     Outputs:
         - obj_logits: [B, 1, H, W]
         - bbox:       [B, 4, H, W]  (xywh in cell/stride space; decoding handles conversion)
-        - pred:       [B, 5, H, W]  (concat of obj_logits and bbox)
+        - detections: [B, 5, H, W]  (concat of obj_logits and bbox)
         - feat:       [B, C, H, W]  (optionally refined feature)
     """
     def __init__(
         self,
         in_channels: int,
         mid_channels: Optional[int] = None,
+        num_convs: int = 2,
         obj_prior: float = 0.01,
         use_refine: bool = False,
     ) -> None:
         super().__init__()
         c_mid = mid_channels or in_channels
 
-        # Lightweight decoupled towers: two 3x3 Conv blocks each
-        self.obj_tower = nn.Sequential(
-            Conv(in_channels, c_mid, kernel_size=3, stride=1),
-            Conv(c_mid, c_mid, kernel_size=3, stride=1),
-        )
-        self.reg_tower = nn.Sequential(
-            Conv(in_channels, c_mid, kernel_size=3, stride=1),
-            Conv(c_mid, c_mid, kernel_size=3, stride=1),
-        )
+        # Lightweight decoupled towers: configurable number of 3x3 Conv blocks
+        obj_tower_layers = [Conv(in_channels, c_mid, kernel_size=3, stride=1)]
+        reg_tower_layers = [Conv(in_channels, c_mid, kernel_size=3, stride=1)]
+        for _ in range(num_convs - 1):
+            obj_tower_layers.append(Conv(c_mid, c_mid, kernel_size=3, stride=1))
+            reg_tower_layers.append(Conv(c_mid, c_mid, kernel_size=3, stride=1))
+        self.obj_tower = nn.Sequential(*obj_tower_layers)
+        self.reg_tower = nn.Sequential(*reg_tower_layers)
 
         # Prediction heads
         self.obj_out = nn.Conv2d(c_mid, 1, kernel_size=1)
@@ -88,9 +88,9 @@ class DecoupledHeadPerLevel(nn.Module):
         obj_logits = self.obj_out(h_obj)                 # [B, 1, H, W]
         bbox = self.reg_scale(self.bbox_out(h_reg))      # [B, 4, H, W]
 
-        pred = torch.cat([obj_logits, bbox], dim=1)      # [B, 5, H, W]
+        detections = torch.cat([obj_logits, bbox], dim=1)      # [B, 5, H, W]
         feat_out = self.refine(x)
-        return {"pred": pred, "obj_logits": obj_logits, "bbox": bbox, "feat": feat_out}
+        return {"detections": detections, "obj_logits": obj_logits, "bbox": bbox, "feat": feat_out}
 
 
 class YoloOneDetectionHead(nn.Module):
@@ -100,7 +100,7 @@ class YoloOneDetectionHead(nn.Module):
     Inputs:
         - x: list of [P3, P4, P5], each tensor [B, Ck, Hk, Wk]
     Outputs (dict):
-        - preds:        list of [B, 5, Hk, Wk]
+        - detections:   list of [B, 5, Hk, Wk]
         - obj_logits:   list of [B, 1, Hk, Wk]
         - bbox:         list of [B, 4, Hk, Wk]
         - features:     list of [B, Ck, Hk, Wk] (refined or pass-through), if enabled
@@ -116,6 +116,7 @@ class YoloOneDetectionHead(nn.Module):
             raise ValueError("in_channels and strides must have the same length")
 
         head_mid: Optional[Union[int, Sequence[int]]] = config.get("head_channels", None)
+        num_head_convs: int = int(config.get("num_head_convs", 2))
         self.return_features: bool = bool(config.get("return_features", True))
         self.refine_features: bool = bool(config.get("refine_features", False))
         obj_prior: float = float(config.get("obj_prior", 0.01))
@@ -136,6 +137,7 @@ class YoloOneDetectionHead(nn.Module):
                 DecoupledHeadPerLevel(
                     in_channels=c_in,
                     mid_channels=c_mid,
+                    num_convs=num_head_convs,
                     obj_prior=obj_prior,
                     use_refine=self.refine_features,
                 )
@@ -155,31 +157,65 @@ class YoloOneDetectionHead(nn.Module):
         self,
         x: List[torch.Tensor],
         decode: bool = False,
-        img_size: Sequence[int] = None,
+        img_size: Optional[Sequence[int]] = None,
+        expert_indices: Optional[torch.Tensor] = None,
     ) -> Dict[str, List[torch.Tensor]]:
         if not isinstance(x, (list, tuple)) or len(x) != len(self.in_channels):
             raise ValueError("Expected a list [P3, P4, P5] matching configured in_channels")
 
-        preds: List[torch.Tensor] = []
-        obj_logits: List[torch.Tensor] = []
-        bboxs: List[torch.Tensor] = []
-        feats: List[torch.Tensor] = []
+        # --- MoE Hard Routing Path (for inference) ---
+        if expert_indices is not None:
+            batch_size = x[0].shape[0]
+            
+            # Initialize full-sized output tensors for each level with zeros.
+            # We will fill these with the results from the selected experts.
+            detections = [torch.zeros(batch_size, 5, *feat.shape[2:], device=feat.device, dtype=feat.dtype) for feat in x]
+            obj_logits = [torch.zeros(batch_size, 1, *feat.shape[2:], device=feat.device, dtype=feat.dtype) for feat in x]
+            bboxs = [torch.zeros(batch_size, 4, *feat.shape[2:], device=feat.device, dtype=feat.dtype) for feat in x]
 
-        for i, feat in enumerate(x):
-            out = self.level_heads[i](feat)
-            preds.append(out["pred"])
-            obj_logits.append(out["obj_logits"])
-            bboxs.append(out["bbox"])
+            # Iterate through each expert (level_head)
+            for i, level_head in enumerate(self.level_heads):
+                # Find which items in the batch selected this expert
+                batch_mask = (expert_indices == i)
+                if batch_mask.any():
+                    # Get the input features for the selected batch items
+                    feat_slice = x[i][batch_mask]
+                    
+                    # Run the selected expert head on the slice of the batch
+                    out = level_head(feat_slice)
+                    
+                    # Scatter the results back into the full-sized tensors
+                    detections[i][batch_mask] = out["detections"]
+                    obj_logits[i][batch_mask] = out["obj_logits"]
+                    bboxs[i][batch_mask] = out["bbox"]
+
+        # --- Standard Path (no MoE or during training) ---
+        else:
+            detections: List[torch.Tensor] = []
+            obj_logits: List[torch.Tensor] = []
+            bboxs: List[torch.Tensor] = []
             if self.return_features:
-                feats.append(out["feat"])
+                feats: List[torch.Tensor] = []
+
+            for i, feat in enumerate(x):
+                out = self.level_heads[i](feat)
+                detections.append(out["detections"])
+                obj_logits.append(out["obj_logits"])
+                bboxs.append(out["bbox"])
+                if self.return_features:
+                    feats.append(out["feat"])
 
         outputs: Dict[str, List[torch.Tensor]] = {
-            "preds": preds,
+            "detections": detections,
             "obj_logits": obj_logits,
             "bbox": bboxs,
         }
         if self.return_features:
-            outputs["features"] = feats
+            # In MoE mode, the concept of a full feature pyramid is ill-defined
+            # as only one level is processed per image. Return an empty list
+            # to maintain API consistency without incurring memory overhead.
+            if expert_indices is None:
+                outputs["features"] = feats
 
         if decode:
             if img_size is None or len(img_size) != 2:
@@ -187,7 +223,7 @@ class YoloOneDetectionHead(nn.Module):
             h_img, w_img = int(img_size[0]), int(img_size[1])
 
             decoded: List[torch.Tensor] = []
-            for pred, stride in zip(preds, self.strides):
+            for pred, stride in zip(detections, self.strides):
                 b, _, hk, wk = pred.shape
                 obj = torch.sigmoid(pred[:, :1])     # [B, 1, Hk, Wk]
                 xy = torch.sigmoid(pred[:, 1:3])     # [B, 2, Hk, Wk] cell offsets in [0,1]
@@ -242,10 +278,14 @@ def create_yolo_one_head(
             raise ValueError("Provided backbone does not expose 'out_channels'.")
         in_channels = list(getattr(backbone, "out_channels"))
 
+    # Lighter head for smaller models
+    num_head_convs = 1 if model_size in ['nano', 'small'] else 2
+
     config: Dict[str, Any] = {
         "in_channels": in_channels,
         "strides": strides or [8, 16, 32],
         "head_channels": kwargs.get("head_channels", None),
+        "num_head_convs": kwargs.get("num_head_convs", num_head_convs),
         "return_features": kwargs.get("return_features", True),
         "refine_features": kwargs.get("refine_features", False),
         "obj_prior": kwargs.get("obj_prior", 0.01),

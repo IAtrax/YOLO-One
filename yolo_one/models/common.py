@@ -47,7 +47,12 @@ class Bottleneck(nn.Module):
         Returns:
             torch.Tensor: Output tensor with shape (batch_size, out_channels, height, width).
         """
-        return x + self.cv2(self.cv1(x)) if self.use_residual else self.cv2(self.cv1(x))
+        # The original one-liner can cause issues with torch.compile's graph capture
+        # due to potential in-place optimizations of the '+' operation.
+        # This more explicit version avoids the issue by creating a clear residual path.
+        residual = x
+        out = self.cv2(self.cv1(x))
+        return out + residual if self.use_residual else out
     
 class SpatialAttention(nn.Module):
     """Spatial attention module for single-class focus"""

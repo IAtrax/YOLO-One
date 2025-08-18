@@ -17,7 +17,7 @@ import torch.nn.functional as F
 
 from yolo_one.configs.config import MODEL_SIZE_MULTIPLIERS as size_multipliers
 # Reuse the same blocks for consistency with the backbone
-from yolo_one.models.common import Conv, CSPBlock
+from yolo_one.models.common import Conv, CSPBlock, Bottleneck
 
 
 class PAFPN(nn.Module):
@@ -35,6 +35,7 @@ class PAFPN(nn.Module):
         - out_channels: List[int] output channels (often equal, e.g., C4)
         - num_blocks:   int, number of internal blocks inside CSP stages
         - sum_fusion:   bool, if True use element-wise sum instead of concat (lighter)
+        - block_type:   str, 'csp' or 'bottleneck' to select the building block
         - upsample_mode:str, 'nearest' (default) or 'nearest-exact'
     """
     def __init__(self, config: Dict[str, Any]) -> None:
@@ -48,6 +49,9 @@ class PAFPN(nn.Module):
 
         self.sum_fusion: bool = bool(config.get("sum_fusion", False))
         self.upsample_mode: str = str(config.get("upsample_mode", "nearest"))
+        block_type = config.get("block_type", "csp")
+        Block = {"csp": CSPBlock, "bottleneck": Bottleneck}[block_type]
+        block_kwargs = {"num_blocks": config["num_blocks"]} if block_type == "csp" else {}
 
         # Lateral 1x1 convs to unify channels per level
         self.lateral_convs = nn.ModuleList([
@@ -56,16 +60,16 @@ class PAFPN(nn.Module):
 
         # Top-down pathway: P5 -> P4 -> P3
         if self.sum_fusion:
-            # Sum fusion keeps the same channel count before CSP
+            # Sum fusion keeps the same channel count before the block
             self.top_down_blocks = nn.ModuleList([
-                CSPBlock(out_channels[1], out_channels[1], num_blocks=config["num_blocks"]),
-                CSPBlock(out_channels[0], out_channels[0], num_blocks=config["num_blocks"]),
+                Block(out_channels[1], out_channels[1], **block_kwargs),
+                Block(out_channels[0], out_channels[0], **block_kwargs),
             ])
         else:
-            # Concat fusion doubles input channels before CSP
+            # Concat fusion doubles input channels before the block
             self.top_down_blocks = nn.ModuleList([
-                CSPBlock(out_channels[1] + out_channels[2], out_channels[1], num_blocks=config["num_blocks"]),
-                CSPBlock(out_channels[0] + out_channels[1], out_channels[0], num_blocks=config["num_blocks"]),
+                Block(out_channels[1] + out_channels[2], out_channels[1], **block_kwargs),
+                Block(out_channels[0] + out_channels[1], out_channels[0], **block_kwargs),
             ])
 
         # Bottom-up pathway: P3' -> P4' -> P5'
@@ -76,13 +80,13 @@ class PAFPN(nn.Module):
 
         if self.sum_fusion:
             self.bottom_up_blocks = nn.ModuleList([
-                CSPBlock(out_channels[1], out_channels[1], num_blocks=config["num_blocks"]),
-                CSPBlock(out_channels[2], out_channels[2], num_blocks=config["num_blocks"]),
+                Block(out_channels[1], out_channels[1], **block_kwargs),
+                Block(out_channels[2], out_channels[2], **block_kwargs),
             ])
         else:
             self.bottom_up_blocks = nn.ModuleList([
-                CSPBlock(out_channels[0] + out_channels[1], out_channels[1], num_blocks=config["num_blocks"]),
-                CSPBlock(out_channels[1] + out_channels[2], out_channels[2], num_blocks=config["num_blocks"]),
+                Block(out_channels[0] + out_channels[1], out_channels[1], **block_kwargs),
+                Block(out_channels[1] + out_channels[2], out_channels[2], **block_kwargs),
             ])
 
         # Expose final channels for the head
@@ -135,6 +139,7 @@ def create_yolo_one_neck(
             - num_blocks:   int, defaults to max(1, round(2 * depth_mult))
             - neck_channels:int, defaults to in_channels[1] (avoid double width scaling)
             - sum_fusion:   bool, default True for 'nano', False otherwise
+        - block_type:   str, default 'bottleneck' for 'nano', 'csp' otherwise
             - upsample_mode:str, default 'nearest'
 
     Returns:
@@ -145,7 +150,14 @@ def create_yolo_one_neck(
 
     depth_mult = float(size_multipliers[model_size]["depth"])
     num_blocks = int(kwargs.get("num_blocks", max(1, round(2 * depth_mult))))
-    neck_channels = int(kwargs.get("neck_channels", in_channels[1]))
+
+    # For nano models, use the smallest input channel count to create a much lighter neck.
+    # For other models, use the middle channel count as a robust default.
+    default_neck_channels = in_channels[0] if model_size == "nano" else in_channels[1]
+    neck_channels = int(kwargs.get("neck_channels", default_neck_channels))
+
+    default_block_type = "bottleneck" if model_size == "nano" else "csp"
+    block_type = kwargs.get("block_type", default_block_type)
 
     default_sum = True if model_size == "nano" else False
     sum_fusion = bool(kwargs.get("sum_fusion", default_sum))
@@ -157,5 +169,6 @@ def create_yolo_one_neck(
         "num_blocks": num_blocks,
         "sum_fusion": sum_fusion,
         "upsample_mode": upsample_mode,
+        "block_type": block_type,
     }
     return PAFPN(config)

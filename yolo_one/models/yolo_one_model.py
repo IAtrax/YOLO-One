@@ -1,77 +1,78 @@
 """
 Iatrax Team - 2025 - https://iatrax.com
 
-COMPLETE YOLO-ONE MODEL ASSEMBLY
+LICENSE: MIT
+
+YOLO-ONE MAIN MODEL
+This file defines the main YoloOne class, which integrates the backbone,
+neck, and head, and includes the Mixture of Experts (MoE) routing logic.
 """
-from .yolo_one_backbone import create_yolo_one_backbone
-from .yolo_one_neck import create_yolo_one_neck
-from .yolo_one_head import create_yolo_one_head
+
+import torch
 import torch.nn as nn
-from .common import GatingNetwork
+from typing import List, Dict, Any
+
+from yolo_one.models.common import GatingNetwork
+from yolo_one.models.yolo_one_backbone import create_yolo_one_backbone
+from yolo_one.models.yolo_one_neck import create_yolo_one_neck
+from yolo_one.models.yolo_one_head import create_yolo_one_head
+
 
 class YoloOne(nn.Module):
-    def __init__(self, model_size='nano', use_moe: bool = False):
+    """
+    YOLO-One: A complete model combining Backbone, Neck, and Head.
+    Includes optional Mixture of Experts (MoE) routing for inference.
+    """
+    def __init__(self, model_size: str = 'nano', **kwargs):
         super().__init__()
-        self.use_moe = use_moe
-
-        # Create each component using its factory function
-        self.backbone = create_yolo_one_backbone(model_size)
-        self.neck = create_yolo_one_neck(model_size, self.backbone.out_channels)
-        self.head = create_yolo_one_head(model_size, in_channels=self.neck.out_channels)
-
-        if self.use_moe:
-            num_experts = len(self.neck.out_channels)
-            # Use channels from the last neck output (P5) for the gating network
-            gating_in_channels = self.neck.out_channels[-1]
-            self.gating_network = GatingNetwork(in_channels=gating_in_channels, num_experts=num_experts)
-    
-    def forward(self, x, decode=False, img_size=None):
-        features_from_backbone = self.backbone(x)
-        features_from_neck = self.neck(features_from_backbone)
-
-        # --- MoE Logic ---
-        if self.use_moe and hasattr(self, 'gating_network'):
-            # Use the P5 feature map (last in the list, lowest resolution) for the gating decision
-            gate_scores = self.gating_network(features_from_neck[-1])  # Shape: [B, num_experts]
-
-            # During inference, we perform "hard" gating to save computation
-            if not self.training:
-                features_for_head = []
-                for i, feat in enumerate(features_from_neck):
-                    # Create a mask for the batch for this expert: [B, 1, 1, 1]
-                    # Cast mask to feature dtype to avoid mixed-precision errors
-                    score_mask = (gate_scores[:, i] > 0.5).to(feat.dtype).view(-1, 1, 1, 1)
-                    # Multiply the feature map by the mask. Inactive items in batch become zero.
-                    features_for_head.append(feat * score_mask)
-            else:
-                # During training, we pass all features to the head for "soft" gating on the loss
-                features_for_head = features_from_neck
-
-            # The head processes the (potentially partially zeroed-out) features
-            outputs = self.head(features_for_head, decode=decode, img_size=img_size)
-            # Rename 'preds' to 'detections' for compatibility with the loss function
-            if 'preds' in outputs:
-                outputs['detections'] = outputs.pop('preds')
-
-            outputs['gate_scores'] = gate_scores
-
-            # During training, we apply the continuous gate scores to the loss-relevant outputs
-            if self.training:
-                for key in ['preds', 'obj_logits', 'bbox']:
-                    if key in outputs:
-                        gated_tensors = []
-                        for i, tensor in enumerate(outputs.get(key, [])):
-                            # Reshape score for broadcasting: [B, num_experts] -> [B, 1, 1, 1]
-                            score = gate_scores[:, i].view(-1, 1, 1, 1)
-                            gated_tensors.append(tensor * score)
-                        outputs[key] = gated_tensors
-        else:
-            # Original forward pass without MoE
-            outputs = self.head(features_from_neck, decode=decode, img_size=img_size)
-            # Rename 'preds' to 'detections' for compatibility with the loss function
-            if 'preds' in outputs:
-                outputs['detections'] = outputs.pop('preds')
-
-        return outputs
-
+        self.model_size = model_size
         
+        # 1. Backbone
+        self.backbone = create_yolo_one_backbone(model_size=model_size)
+        
+        # 2. Neck
+        self.neck = create_yolo_one_neck(
+            model_size=model_size,
+            in_channels=self.backbone.out_channels
+        )
+        
+        # 3. Head
+        self.head = create_yolo_one_head(
+            model_size=model_size,
+            in_channels=self.neck.out_channels
+        )
+        
+        # 4. MoE Gating Network (now a native component)
+        # The gating network takes a global feature representation as input.
+        # We'll use the output of the last stage of the backbone (P5).
+        gating_in_channels = self.backbone.out_channels[-1]
+        num_experts = len(self.neck.out_channels) # Typically 3 (P3, P4, P5)
+        self.gating_network = GatingNetwork(gating_in_channels, num_experts)
+
+    def forward(self, x: torch.Tensor, decode: bool = False, img_size=None):
+        with torch.autograd.profiler.record_function("YoloOne::Backbone"):
+            features = self.backbone(x)
+        
+        with torch.autograd.profiler.record_function("YoloOne::Neck"):
+            fused_features = self.neck(features)
+
+        # MoE Gating is now native
+        with torch.autograd.profiler.record_function("YoloOne::MoE_Gating"):
+            # The GatingNetwork from common.py handles pooling internally
+            gate_scores = self.gating_network(features[-1])
+
+        with torch.autograd.profiler.record_function("YoloOne::Head"):
+            # The head now receives the soft gate_scores for routing.
+            # It can decide to perform hard routing (argmax) internally during inference.
+            outputs = self.head(
+                fused_features, 
+                decode=decode, 
+                img_size=img_size,
+                gate_scores=gate_scores
+            )
+        
+        # Add gate_scores to the output dict for the loss function
+        if isinstance(outputs, dict):
+            outputs['gate_scores'] = gate_scores
+        
+        return outputs

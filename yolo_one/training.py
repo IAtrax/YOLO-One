@@ -130,8 +130,7 @@ class YoloOneTrainer:
         
         # Create model with proper configuration
         model = YoloOne(
-            model_size=model_config.get('model_size', 'nano'),
-            use_moe=model_config.get('use_moe', True)
+            model_size=model_config.get('model_size', 'nano')
         )
         
         model = model.to(self.device)
@@ -399,16 +398,14 @@ class YoloOneTrainer:
                 
                 # Forward pass
                 inference_start = time.time()
-                # Get both raw and decoded predictions in one call
                 with autocast(enabled=self.use_mixed_precision):
                     predictions = model_to_eval(images, decode=True, img_size=images.shape[2:])
-                    # Use raw predictions for the loss function
                     loss_dict = self.criterion(predictions, targets, model_to_eval)
                 
                 inference_time = time.time() - inference_start
                 
                 # Predictions and targets are already on the correct device.
-                # Pass them directly to the metrics calculator.
+                # Passer les prédictions décodées au calculateur de métriques.
                 decoded_preds_gpu = predictions['decoded']
 
                 # Update metrics

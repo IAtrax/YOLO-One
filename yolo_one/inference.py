@@ -11,8 +11,9 @@ import torch
 import torch.nn as nn
 import cv2
 import numpy as np
-from typing import List, Dict, Tuple, Union, Optional
+from typing import List, Dict, Tuple, Optional
 import time
+import copy
 import logging
 
 # Import your YOLO-One model
@@ -33,9 +34,9 @@ class YoloOneInference:
         nms_threshold: float = 0.45,
         max_detections: int = 2,
         model_size: str = 'nano',
-        use_moe: bool = False,
         input_size: int = 640,
         half_precision: bool = True,
+        compile_model: bool = True,
         warmup_iterations: int = 3
     ):
         """
@@ -48,9 +49,9 @@ class YoloOneInference:
             nms_threshold: NMS threshold for duplicate removal
             max_detections: Maximum detections per image
             model_size: Model size ('nano', 'small', etc.)
-            use_moe: Whether the model uses Mixture of Experts
             input_size: Model input size (square)
             half_precision: Use FP16 for faster inference
+            compile_model: Use torch.compile() for maximum speed
             warmup_iterations: GPU warmup iterations
         """
         
@@ -59,9 +60,11 @@ class YoloOneInference:
         self.nms_threshold = nms_threshold
         self.max_detections = max_detections
         self.model_size = model_size
-        self.use_moe = use_moe
         self.input_size = input_size
-        self.half_precision = half_precision and device == 'cuda'
+        self.half_precision = half_precision and self.device.type == 'cuda'
+        self.compile_model = compile_model and self.device.type == 'cuda'
+        # Channels-last is now the default for CUDA inference
+        self.channels_last = self.device.type == 'cuda'
         
         # Centralized post-processor
         self.post_processor = YoloOnePostProcessor(
@@ -81,7 +84,7 @@ class YoloOneInference:
             self.end_event = torch.cuda.Event(enable_timing=True)
 
         # GPU warmup for optimal performance
-        if warmup_iterations > 0 and device == 'cuda':
+        if warmup_iterations > 0 and self.device.type == 'cuda':
             self._warmup_gpu(warmup_iterations)
         
         # Performance tracking
@@ -89,47 +92,49 @@ class YoloOneInference:
         self.preprocessing_times = []
         self.postprocessing_times = []
         
-        logging.info(f"YOLO-One inference engine ready on {device}")
+        logging.info(f"YOLO-One inference engine ready on {self.device}")
         logging.info(f"Confidence: {confidence_threshold}, NMS: {nms_threshold}")
+        logging.info(f"Half Precision: {self.half_precision}, Compiled: {self.compile_model}, Channels Last: {self.channels_last}")
     
     def _load_yolo_one_model(self, model_path: str) -> nn.Module:
         """Load and prepare YOLO-One model for inference"""
-        
-        model = YoloOne(model_size=self.model_size, use_moe=self.use_moe)  # Use configured model size
 
         # This function is designed to load a lightweight model file (.pt) which
         # contains only the model's state_dict, not a full training checkpoint.
         # For inference, please use 'best_model.pt' or 'final_model.pt'.
         state_dict = torch.load(model_path, map_location=self.device)
-
-        # --- Auto-detect MoE architecture from the state dictionary ---
-        is_moe_model_in_weights = any('gating_network' in k for k in state_dict.keys())
-
-        if self.use_moe != is_moe_model_in_weights:
-            logging.warning(
-                f"Model architecture mismatch detected. "
-                f"The weights file indicates a {'MoE' if is_moe_model_in_weights else 'standard'} model, "
-                f"but the '--use-moe' flag was set to {self.use_moe}. "
-                f"Overriding with the architecture found in the weights file."
-            )
-            self.use_moe = is_moe_model_in_weights
-
-        # Create the model with the correct architecture
-        model = YoloOne(model_size=self.model_size, use_moe=self.use_moe)
-
-        # Proactively handle weights saved from a compiled model by removing the '_orig_mod.' prefix.
+        
+        model = YoloOne(model_size=self.model_size)
+        # Proactively handle weights saved from a compiled model by removing the '_orig_mod.' prefix
         cleaned_state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
         
         model.load_state_dict(cleaned_state_dict, strict=True)
         # Prepare for inference
         model = model.to(self.device)
         model.eval()
-        print("USED DEVICE", self.device)
+        
         # Enable half precision if requested
         if self.half_precision:
             model = model.half()
+            logging.info("Using half precision (FP16) for CUDA inference.")
+
+        # Use channels-last memory format for potential speedup on modern GPUs
+        if self.channels_last:
+            model = model.to(memory_format=torch.channels_last)
+            logging.info("Using channels-last memory format for CUDA inference.")
+
+        # Compile the model for a significant speedup (PyTorch 2.0+)
+        if self.compile_model:
+            try:
+                logging.info("Compiling model with torch.compile() for maximum performance... (this may take a moment on first run)")
+                # 'reduce-overhead' is a great mode for inference.
+                # For even faster speed, 'max-autotune' can be used, but it has a longer compile time.
+                model = torch.compile(model, mode="reduce-overhead")
+                logging.info("Model compiled successfully.")
+            except Exception as e:
+                logging.warning(f"⚠️ Model compilation failed: {e}. Continuing without compilation.")
         
-        # Model optimization
+        # Disable gradients for all parameters
         for param in model.parameters():
             param.requires_grad = False
         
@@ -149,6 +154,8 @@ class YoloOneInference:
             device=self.device,
             dtype=target_dtype
         )
+        if self.channels_last: # This check remains as it's cuda-specific
+            dummy_input = dummy_input.to(memory_format=torch.channels_last)
         with torch.no_grad():
             for _ in range(iterations):
                 _ = self.model(dummy_input)
@@ -184,21 +191,27 @@ class YoloOneInference:
         with torch.no_grad():
             if self.device.type == 'cuda':
                 self.start_event.record()
-                predictions = self.model(preprocessed_tensor, decode=True, img_size=preprocessed_tensor.shape[2:])
+                predictions = self.model(
+                    preprocessed_tensor, 
+                    decode=True, 
+                    img_size=preprocessed_tensor.shape[2:]
+                )
                 self.end_event.record()
-                # Wait for the events to complete
                 torch.cuda.synchronize()
-                # elapsed_time returns time in milliseconds, convert to seconds
                 inference_time = self.start_event.elapsed_time(self.end_event) / 1000.0
             else: # Fallback to standard timing for CPU
                 start_time = time.time()
-                predictions = self.model(preprocessed_tensor, decode=True, img_size=preprocessed_tensor.shape[2:])
+                predictions = self.model(
+                    preprocessed_tensor, 
+                    decode=True, 
+                    img_size=preprocessed_tensor.shape[2:]
+                )
                 inference_time = time.time() - start_time
         
         # Postprocessing
         start_time = time.time()
         
-        # Delegate post-processing to the centralized processor
+        # Delegate post-processing to the centralized processor, which handles rescaling
         results_list = self.post_processor.process_batch(
             predictions=predictions['decoded'],
             original_shapes=[original_image.shape[:2]],
@@ -221,6 +234,8 @@ class YoloOneInference:
             'image_shape': original_image.shape[:2],
             'num_detections': len(detections['boxes']),
             'inference_time': inference_time,
+            'preprocessing_time': preprocessing_time,
+            'postprocessing_time': postprocessing_time,
             'total_time': preprocessing_time + inference_time + postprocessing_time,
             'confidence_scores': detections['scores'],
             'aspect_ratios': detections.get('aspects', [])
@@ -273,17 +288,14 @@ class YoloOneInference:
         """Internal batch prediction for YOLO-One"""
         
         # Preprocess batch
-        original_images = []
+        original_shapes = []
         preprocessed_tensors = []
         scale_factors = []
         paddings = []
         
         for image in batch:
-            orig_img = image.copy()
-            # Preprocess
-            prep_tensor, scale_factor, padding = self._preprocess_image(orig_img)
-            
-            original_images.append(orig_img)
+            original_shapes.append(image.shape[:2])
+            prep_tensor, scale_factor, padding = self._preprocess_image(image)
             preprocessed_tensors.append(prep_tensor.squeeze(0))
             scale_factors.append(scale_factor)
             paddings.append(padding)
@@ -298,50 +310,49 @@ class YoloOneInference:
         with torch.no_grad():
             if self.device.type == 'cuda':
                 self.start_event.record()
-                batch_predictions = self.model(batch_tensor, decode=True, img_size=batch_tensor.shape[2:])
+                batch_predictions = self.model(
+                    batch_tensor, 
+                    decode=True, 
+                    img_size=batch_tensor.shape[2:]
+                )
                 self.end_event.record()
-                # Wait for the events to complete
                 torch.cuda.synchronize()
-                # elapsed_time returns time in milliseconds, convert to seconds
                 inference_time = self.start_event.elapsed_time(self.end_event) / 1000.0
             else: # Fallback to standard timing for CPU
+                print("FALLBACK TO CPU")
                 start_time = time.time()
-                batch_predictions = self.model(batch_tensor, decode=True, img_size=batch_tensor.shape[2:])
+                batch_predictions = self.model(
+                    batch_tensor, 
+                    decode=True, 
+                    img_size=batch_tensor.shape[2:]
+                )
                 inference_time = time.time() - start_time
         
-        # Process each image in batch
+        # Post-process the entire batch at once
+        processed_detections_list = self.post_processor.process_batch(
+            predictions=batch_predictions['decoded'],
+            original_shapes=original_shapes,
+            scale_factors=scale_factors,
+            paddings=paddings
+        )
+
+        # Manually rescale and format results for each image
         results = []
-        for i, (orig_img, scale_factor, padding) in enumerate(
-            zip(original_images, scale_factors, paddings) # This was missing paddings
-        ):
-            # Extract predictions for current image
-            img_predictions = {key: [p[i:i+1] for p in pred_list] for key, pred_list in batch_predictions.items()}
-            
-            # Postprocess
-            processed_detections_list = self.post_processor.process_batch(
-                predictions=img_predictions['decoded'],
-                original_shapes=[orig_img.shape[:2]],
-                scale_factors=[scale_factor],
-                paddings=[padding]
-            )
-            detections = self._format_output_detections(processed_detections_list[0])
+        for i, (processed_detections, original_shape) in enumerate(zip(processed_detections_list, original_shapes)):
+            detections = self._format_output_detections(processed_detections)
             
             results.append({
                 'detections': detections,
-                'image_shape': orig_img.shape[:2],
-                'num_detections': len(detections['boxes']),
-                'inference_time': inference_time / len(original_images)
+                'image_shape': original_shape,
+                'num_detections': detections['num_detections'],
+                'inference_time': inference_time / len(batch)
             })
         
         return results
     
-    def _extract_single_prediction(self, batch_predictions: Dict, batch_idx: int) -> Dict:
-        """No longer needed, post-processor handles batch logic."""
-        pass
-
     def _preprocess_image(self, image: np.ndarray) -> Tuple[torch.Tensor, float, Tuple[int, int]]:
         """
-        Preprocess image for YOLO-One inference
+        Preprocess image for YOLO-One inference (optimized version)
         
         Args:
             image: Input image (BGR format)
@@ -352,16 +363,14 @@ class YoloOneInference:
         
         original_height, original_width = image.shape[:2]
         
-        # Calculate scale factor
+        # Calculate scale factor and new dimensions
         scale_factor = min(
             self.input_size / original_width,
             self.input_size / original_height
         )
         
-        # Resize image
         new_width = int(original_width * scale_factor)
         new_height = int(original_height * scale_factor)
-        resized = cv2.resize(image, (new_width, new_height))
         
         # Calculate padding
         pad_x = self.input_size - new_width
@@ -369,24 +378,26 @@ class YoloOneInference:
         pad_left = pad_x // 2
         pad_top = pad_y // 2
         
-        # Apply padding
-        padded = cv2.copyMakeBorder(
-            resized, 
-            pad_top, pad_y - pad_top,
-            pad_left, pad_x - pad_left,
-            cv2.BORDER_CONSTANT, 
-            value=(114, 114, 114)
+        # Create output array directly with padding
+        output = np.full(
+            (self.input_size, self.input_size, 3), 
+            114, 
+            dtype=np.uint8
+        )        
+        output[pad_top:pad_top + new_height, pad_left:pad_left + new_width] = cv2.resize(
+            image, 
+            (new_width, new_height),
+            interpolation=cv2.INTER_LINEAR
         )
+        rgb_normalized = output[:, :, [2, 1, 0]].astype(np.float32) * (1.0 / 255.0)
         
-        # Convert to tensor
-        rgb_image = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
-        tensor = torch.from_numpy(rgb_image).float() / 255.0
-        tensor = tensor.permute(2, 0, 1)  # HWC to CHW
-        tensor = tensor.unsqueeze(0)  # Add batch dimension
-        tensor = tensor.to(self.device)
-        
+        tensor = torch.from_numpy(rgb_normalized.transpose(2, 0, 1)).unsqueeze(0)        
         if self.half_precision:
-            tensor = tensor.half()
+            tensor = tensor.to(device=self.device, dtype=torch.float16)
+        else:
+            tensor = tensor.to(self.device)
+        if self.channels_last: # This check remains as it's cuda-specific
+            tensor = tensor.to(memory_format=torch.channels_last)
         
         return tensor, scale_factor, (pad_left, pad_top)
     
@@ -479,10 +490,10 @@ def create_yolo_one_inference(
     device: str = 'cuda',
     confidence_threshold: float = 0.25,
     nms_threshold: float = 0.45,
-    use_moe: bool = False,
     model_size: str = 'nano',
     input_size: int = 640,
-    half_precision: bool = True
+    half_precision: bool = True,
+    compile_model: bool = True
 ) -> YoloOneInference:
     """
     Factory function to create YOLO-One inference engine
@@ -492,10 +503,10 @@ def create_yolo_one_inference(
         device: Computation device
         confidence_threshold: Detection confidence threshold
         nms_threshold: NMS IoU threshold
-        use_moe: Whether the model uses Mixture of Experts
         model_size: Model size ('nano', 'small', etc.)
         input_size: Model input size
         half_precision: Use FP16 for speed optimization
+        compile_model: Use torch.compile() for maximum speed
         
     Returns:
         Configured YOLO-One inference engine
@@ -506,10 +517,10 @@ def create_yolo_one_inference(
         device=device,
         confidence_threshold=confidence_threshold,
         nms_threshold=nms_threshold,
-        use_moe=use_moe,
         model_size=model_size,
         input_size=input_size,
-        half_precision=half_precision
+        half_precision=half_precision,
+        compile_model=compile_model
     )
 
 
@@ -523,10 +534,10 @@ if __name__ == "__main__":
     parser.add_argument('--source', type=str, required=True, help='Path to input image.')
     parser.add_argument('--output', type=str, default='output_inference.jpg', help='Path to save output image.')
     parser.add_argument('--model-size', type=str, default='nano', help='Model size (e.g., nano, small).')
-    parser.add_argument('--use-moe',default=True, help='Enable Mixture of Experts during inference.')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use (e.g., cuda, cpu).')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use (e.g., cuda, cpu).')
     parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold.')
     parser.add_argument('--iou', type=float, default=0.45, help='IoU threshold for NMS.')
+    parser.add_argument('--no-compile', action='store_true', help='Disable torch.compile() for debugging.')
     args = parser.parse_args()
     
     # Initialize YOLO-One inference engine
@@ -536,7 +547,7 @@ if __name__ == "__main__":
         confidence_threshold=args.conf,
         nms_threshold=args.iou,
         model_size=args.model_size,
-        use_moe=args.use_moe
+        compile_model=not args.no_compile
     )
     
     # Load the image before passing it to the engine
@@ -554,6 +565,9 @@ if __name__ == "__main__":
     
     print(f"Detected {results['num_detections']} objects")
     print(f"Inference time: {results['inference_time']*1000:.2f}ms")
+    print(f"Preprocessing time: {results['preprocessing_time']*1000:.2f}ms")
+    print(f"Postprocessing time: {results['postprocessing_time']*1000:.2f}ms")
+    
     
     if results['visualization'] is not None:
         cv2.imwrite(args.output, results['visualization'])

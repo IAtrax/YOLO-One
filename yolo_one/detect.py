@@ -23,8 +23,7 @@ def detect(args: argparse.Namespace):
         confidence_threshold=args.conf,
         nms_threshold=args.iou,
         input_size=args.input_size,
-        model_size=args.model_size,
-        use_moe=args.use_moe
+        model_size=args.model_size
     )
     print("Inference engine ready.")
 
@@ -40,7 +39,12 @@ def detect(args: argparse.Namespace):
     )
     inference_time = results.get('inference_time', 0)
     fps = 1.0 / inference_time if inference_time > 0 else 0
+    postprocessing_time = results.get('postprocessing_time', 0)
+    preprocessing_time = results.get('preprocessing_time', 0)
     print(f"Found {results['num_detections']} objects in {results['total_time']*1000:.2f}ms (Inference: {inference_time*1000:.2f}ms, FPS: {fps:.1f}).")
+    print(f"Preprocessing time: {preprocessing_time*1000:.2f}ms")
+    print(f"Postprocessing time: {postprocessing_time*1000:.2f}ms")
+
 
     # 3. Use the results
     detections = results['detections']
@@ -59,10 +63,9 @@ if __name__ == "__main__":
     parser.add_argument('--weights', type=str, default=None, help='Path to model weights file.')
     parser.add_argument('--source', type=Path, required=True, help='Path to input image.')
     parser.add_argument('--model-size', type=str, default='nano', choices=['nano', 'small', 'medium', 'large'], help='Model size.')
-    parser.add_argument('--use-moe', default=True, action='store_true', help='Specify if the model was trained with Mixture of Experts.')
     parser.add_argument('--input-size', type=int, default=640, help='Model input size.')
-    parser.add_argument('--conf', type=float, default=0.05, help='Confidence threshold.')
-    parser.add_argument('--iou', type=float, default=0.05, help='IoU threshold for NMS.')
+    parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold.')
+    parser.add_argument('--iou', type=float, default=0.45, help='IoU threshold for NMS.')
     parser.add_argument('--device', type=str, default=None, help='Device to use (e.g., cpu, cuda, cuda:0).')
     parser.add_argument('--output-dir', type=str, default='./runs/detect', help='Directory to save output images.')
 

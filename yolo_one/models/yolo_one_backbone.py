@@ -7,8 +7,8 @@ BACKBONE MODULE FOR YOLO-ONE
 """
 import torch
 import torch.nn as nn
-from typing import List, Dict, Any
-from yolo_one.models.common import Conv, CSPBlock, SpatialAttention
+from typing import List, Dict, Any, Type
+from yolo_one.models.common import Conv, CSPBlock, SpatialAttention, Bottleneck
 from yolo_one.configs.config import MODEL_SIZE_MULTIPLIERS as size_multipliers
 
 
@@ -27,20 +27,25 @@ class YoloOneBackbone(nn.Module):
         - config (Dict[str, Any]): Configuration dictionary for the backbone.
         """
         super().__init__()
-        self.config = config        
-        self.stem = Conv(3, config['channels'][0], kernel_size=6, stride=2)
+        self.config = config
+        stem_kernel_size = config.get('stem_kernel_size', 3)
+        self.use_attention = config.get('use_attention', False)
+        self.stem = Conv(3, config['channels'][0], kernel_size=stem_kernel_size, stride=2)
+        
         self.layers = nn.ModuleList()
         in_ch = config['channels'][0]
-        for i, (out_ch, num_blocks, use_csp) in enumerate(config['stages']):
-            self.layers.append(Conv(in_ch, config['channels'][i], kernel_size=3, stride=2))
-            in_ch = config['channels'][i]
-            # CSP or Conv stage
+        for out_ch, num_blocks, use_csp in config['stages']:
+            # Downsampling layer that also changes channel dimension
+            self.layers.append(Conv(in_ch, out_ch, kernel_size=3, stride=2))
+            
+            # CSP or a lighter Bottleneck stage for nano models
             if use_csp:
-                stage = CSPBlock(in_ch, out_ch, num_blocks=num_blocks)
+                stage = CSPBlock(out_ch, out_ch, num_blocks=num_blocks)
             else:
-                stage = Conv(in_ch, out_ch, kernel_size=3, stride=1) 
+                # For 'nano' models, we use a sequence of lighter Bottleneck blocks
+                stage = nn.Sequential(*[Bottleneck(out_ch, out_ch, shortcut=True) for _ in range(num_blocks)])
             self.layers.append(stage)
-            in_ch = out_ch
+            in_ch = out_ch  # Update in_ch for the next iteration's downsample_conv
 
         # The output indices now need to be mapped to the new `layers` structure
         self.output_indices = [idx * 2 + 1 for idx in config['output_indices']]
@@ -48,8 +53,9 @@ class YoloOneBackbone(nn.Module):
 
         # Create a separate attention layer for each output feature map.
         # This allows each scale to learn its own spatial focus.
-        self.attention_layers = nn.ModuleList([SpatialAttention() for _ in self.output_indices])
-
+        if self.use_attention:
+            self.attention_layers = nn.ModuleList([SpatialAttention() for _ in self.output_indices])
+        
         self._initialize_weights()
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
@@ -69,9 +75,12 @@ class YoloOneBackbone(nn.Module):
             x = layer(x)
             # If the index of this layer is one of our desired outputs, save it
             if i in self.output_indices:
-                attended_x = self.attention_layers[output_count](x)
-                outputs.append(attended_x)
-                output_count += 1
+                if self.use_attention:
+                    attended_x = self.attention_layers[output_count](x)
+                    outputs.append(attended_x)
+                    output_count += 1
+                else:
+                    outputs.append(x)
         
         return outputs
 
@@ -118,19 +127,32 @@ def create_yolo_one_backbone(model_size: str = 'nano') -> YoloOneBackbone:
     # Base configuration
     # Format: [output_channels, num_blocks, use_csp_block]
     base_channels = [32, 64, 128, 256, 512]
+
+    # For the nano model, we adjust the base channels to start with a more
+    # hardware-friendly width (16 instead of 8) to improve GPU utilization.
+    if model_size == 'nano':
+        base_channels = [64, 64, 128, 256, 512]
     
     final_channels = [_make_divisible(c * w) for c in base_channels]
+
+    # Nano models prioritize speed: smaller stem and no attention
+    use_attention = model_size not in ['nano', 'small']
+    stem_kernel_size = 3 if model_size in ['nano', 'small'] else 6
+    # For nano models, we replace heavy CSPBlocks with lighter Bottleneck sequences
+    use_csp_blocks = model_size != 'nano'
 
     base_config = {
         'channels': final_channels,
         'stages': [
-            # out_ch, num_blocks, use_csp
-            ( final_channels[1], max(1, round(2 * d)), True), # Stage 1
-            ( final_channels[2], max(1, round(4 * d)), True), # Stage 2 (P3 out)
-            ( final_channels[3], max(1, round(6 * d)), True), # Stage 3 (P4 out)
-            ( final_channels[4], max(1, round(4 * d)), True), # Stage 4 (P5 out)
+            # out_ch, num_blocks, use_csp_block
+            ( final_channels[1], max(1, round(2 * d)), use_csp_blocks), # Stage 1
+            ( final_channels[2], max(1, round(4 * d)), use_csp_blocks), # Stage 2 (P3 out) - Kept
+            ( final_channels[3], max(1, round(4 * d)), use_csp_blocks), # Stage 3 (P4 out) - Reduced depth
+            ( final_channels[4], max(1, round(2 * d)), use_csp_blocks), # Stage 4 (P5 out) - Reduced depth
         ],
-        'output_indices': [1, 2, 3] # Corresponds to P3, P4, P5
+        'output_indices': [1, 2, 3], # Corresponds to P3, P4, P5
+        'stem_kernel_size': stem_kernel_size,
+        'use_attention': use_attention
     }
 
     return YoloOneBackbone(base_config)
