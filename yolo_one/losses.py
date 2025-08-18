@@ -67,25 +67,28 @@ class YoloOneLoss(nn.Module):
         
         device = predictions['detections'][0].device
         
-        # Initialize losses
-        loss_box = torch.zeros(1, device=device)
-        loss_obj = torch.zeros(1, device=device)
-        loss_moe_balance = torch.zeros(1, device=device)
-        # The following losses are disabled as the current head does not produce these outputs
-        # loss_aspect = torch.zeros(1, device=device)
-        # loss_shape_conf = torch.zeros(1, device=device)
-        
         # --- MoE Load Balancing Loss ---
-        if self.moe_balance_weight > 0 and 'gate_scores' in predictions:
-            gate_scores = predictions.get('gate_scores')
-            if gate_scores is not None:
-                num_experts = gate_scores.shape[1]
-                load_per_expert = gate_scores.sum(dim=0)
-                # Calculate the coefficient of variation squared, a common load balancing loss
-                # We multiply by num_experts as a heuristic to keep the loss magnitude stable
-                loss_moe_balance = (load_per_expert.var() / (load_per_expert.mean()**2 + 1e-8)) * num_experts
+        # This loss encourages the gating network to distribute load across experts,
+        # preventing it from collapsing to using only one expert for all inputs.
+        gate_scores = predictions.get('gate_scores')
+        loss_moe_balance = torch.zeros(1, device=device)
+        if self.moe_balance_weight > 0 and gate_scores is not None:
+            num_experts = gate_scores.shape[1]
+            load_per_expert = gate_scores.sum(dim=0)
+            # Calculate the coefficient of variation squared, a common load balancing loss.
+            # We multiply by num_experts as a heuristic to keep the loss magnitude stable.
+            loss_moe_balance = (load_per_expert.var() / (load_per_expert.mean()**2 + 1e-8)) * num_experts
 
-        # Scale information
+        # --- Per-Expert Loss Calculation ---
+        # We calculate the loss for each expert (detection head) separately.
+        # These will then be weighted by the gate_scores to train the Gating Network.
+        box_losses_per_expert = []
+        obj_losses_per_expert = []
+
+        # The following losses are disabled as the current head does not produce these outputs
+        # aspect_losses_per_expert = []
+        # shape_conf_losses_per_expert = []
+
         scales = [
             {'stride': 8, 'size': 80},   # P3
             {'stride': 16, 'size': 40},  # P4
@@ -93,7 +96,7 @@ class YoloOneLoss(nn.Module):
         ]
         
         # Process each scale
-        for scale_idx, scale_info in enumerate(scales):
+        for scale_idx, scale_info in enumerate(scales): # Each scale corresponds to an expert
             
             detections = predictions['detections'][scale_idx]
             # aspects = predictions.get('aspects', [None]*3)[scale_idx]
@@ -116,30 +119,29 @@ class YoloOneLoss(nn.Module):
             target_boxes = scale_targets[:, :, :, :4]  # [B, H, W, 4]
             target_conf = scale_targets[:, :, :, 4]    # [B, H, W]
             
+            scale_box_loss = torch.zeros(1, device=device)
+            scale_obj_loss = torch.zeros(1, device=device)
+
             # Box loss (only where objects exist)
             if box_mask.sum() > 0:
-                # Fix: Proper indexing for box predictions and targets
                 # pred_boxes: [B, 4, H, W] -> [B, H, W, 4] for proper masking
                 pred_boxes_hwc = pred_boxes.permute(0, 2, 3, 1)  # [B, H, W, 4]
                 
                 pred_boxes_masked = pred_boxes_hwc[box_mask]  # [num_objects, 4]
                 target_boxes_masked = target_boxes[box_mask]  # [num_objects, 4]
                 
-                box_loss = self._compute_anchor_free_box_loss(
+                scale_box_loss = self._compute_anchor_free_box_loss(
                     pred_boxes_masked, target_boxes_masked, 
                     scale_info['stride'], height, width
                 )
                 
-                # Boost P5 loss
-                weight = self.box_weight
-                if scale_idx == 2:  # P5 scale
-                    weight *= self.p5_weight_boost
-                    
-                loss_box += box_loss * weight
-            
-            # Objectness loss
-            obj_loss = self._compute_objectness_loss(pred_conf, target_conf, obj_mask)
-            loss_obj += obj_loss * self.obj_weight
+            # Objectness loss for this scale
+            scale_obj_loss = self._compute_objectness_loss(pred_conf, target_conf, obj_mask)
+
+            # Apply weights
+            box_weight = self.box_weight * (self.p5_weight_boost if scale_idx == 2 else 1.0)
+            box_losses_per_expert.append(scale_box_loss * box_weight)
+            obj_losses_per_expert.append(scale_obj_loss * self.obj_weight)
             
             # # Aspect ratio loss (disabled)
             # if pred_aspects is not None and aspect_targets is not None and box_mask.sum() > 0:
@@ -155,8 +157,26 @@ class YoloOneLoss(nn.Module):
             #         pred_shape_conf, shape_conf_targets
             #     )
             #     loss_shape_conf += shape_conf_loss * self.shape_conf_weight
-        
-        # Total loss
+
+        # --- Combine Losses ---
+        # If MoE is active, weigh losses by gate scores. This teaches the Gating Network
+        # to route inputs to the expert that is best at handling them.
+        if gate_scores is not None:
+            # Average scores across the batch to get a weight for each expert
+            expert_weights = gate_scores.mean(dim=0)  # [num_experts]
+            
+            # Stack losses into a tensor: [num_experts]
+            total_box_losses = torch.stack(box_losses_per_expert)
+            total_obj_losses = torch.stack(obj_losses_per_expert)
+            
+            # Weighted sum
+            loss_box = (total_box_losses * expert_weights).sum()
+            loss_obj = (total_obj_losses * expert_weights).sum()
+        else:
+            # Standard summation if no gating (e.g., for a non-MoE model)
+            loss_box = torch.sum(torch.stack(box_losses_per_expert))
+            loss_obj = torch.sum(torch.stack(obj_losses_per_expert))
+
         total_loss = loss_box + loss_obj + (loss_moe_balance * self.moe_balance_weight)
         
         return {
@@ -383,7 +403,7 @@ class YoloOneLoss(nn.Module):
                     target_boxes: torch.Tensor, 
                     )-> torch.Tensor:
         
-        px1, py1, px2, py2 = self._xywh_to_xyxy(pred_boxes)
+        px1, py1, px2, py2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
         tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
 
         inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
@@ -440,6 +460,10 @@ class YoloOneLoss(nn.Module):
         ew, eh = ex2 - ex1, ey2 - ey1
         c2 = ew**2 + eh**2 
         
+        # Define pw, ph, tw, th before use
+        pw, ph = px2 - px1, py2 - py1
+        tw, th = tx2 - tx1, ty2 - ty1
+        
         wc2, hc2 = ew**2, eh**2 
         rho2_w = (pw - tw) ** 2
         rho2_h = (ph - th) ** 2
@@ -447,9 +471,6 @@ class YoloOneLoss(nn.Module):
         pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
         tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
         rho2_center = (pcx - tcx)**2 + (pcy - tcy)**2
-
-        pw, ph = px2 - px1, py2 - py1
-        tw, th = tx2 - tx1, ty2 - ty1
 
         #v_aspect = (4 / (torch.pi**2)) * (torch.atan(tw / th) - torch.atan(pw / ph))**2
         v_absolute =  rho2_w / (wc2 + 1e-6) + rho2_h / (hc2 + 1e-6)
