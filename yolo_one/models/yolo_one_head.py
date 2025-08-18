@@ -261,21 +261,23 @@ class YoloOneDetectionHead(nn.Module):
                 # Perform the full decoding logic only for activated heads.
                 b, _, hk, wk = pred.shape
                 obj = torch.sigmoid(pred[:, :1])     # [B, 1, Hk, Wk]
-                xy = torch.sigmoid(pred[:, 1:3])     # [B, 2, Hk, Wk] cell offsets in [0, 1]
-                wh = F.softplus(pred[:, 3:5])        # [B, 2, Hk, Wk] positive sizes
+                xy = torch.sigmoid(pred[:, 1:3])     # [B, 2, Hk, Wk] cell offsets in [0, 1]                
+                # The loss function uses an implicit log-space for w,h.
+                # The correct inverse is exp(), not softplus().
+                # Clamp to prevent potential overflow with FP16.
+                wh = torch.exp(pred[:, 3:5]).clamp(max=1E4) # [B, 2, Hk, Wk] positive sizes
 
                 grid = self._make_grid(hk, wk, pred.device)   # [2, Hk, Wk]
                 xy_pix = (grid.unsqueeze(0) + xy) * float(stride)  # [B, 2, Hk, Wk]
                 wh_pix = wh * float(stride)                      # [B, 2, Hk, Wk]
-
-                x_c = xy_pix[:, 0] / w_img
-                y_c = xy_pix[:, 1] / h_img
-                w_n = wh_pix[:, 0] / w_img
-                h_n = wh_pix[:, 1] / h_img
-
-                # [B, 5, Hk, Wk] → (x, y, w, h, conf) with conf=sigmoid(obj)
-                decoded.append(torch.stack([x_c, y_c, w_n, h_n, obj.squeeze(1)], dim=1))
-
+                
+                # Vectorized decoding and normalization for clarity and potential speedup
+                decoded_boxes_pix = torch.cat([xy_pix, wh_pix], dim=1) # [B, 4, Hk, Wk]
+                norm_tensor = torch.tensor([w_img, h_img, w_img, h_img], device=pred.device, dtype=pred.dtype).view(1, 4, 1, 1)
+                decoded_boxes_norm = decoded_boxes_pix / norm_tensor
+                
+                # [B, 5, Hk, Wk] -> (x, y, w, h, conf)
+                decoded.append(torch.cat([decoded_boxes_norm, obj], dim=1))
             outputs["decoded"] = decoded
 
         return outputs

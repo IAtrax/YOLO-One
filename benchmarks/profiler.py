@@ -116,7 +116,9 @@ def profile_model(args):
         torch.cuda.synchronize()
     for _ in range(args.warmup_steps):
         with torch.no_grad():
-            _ = model(dummy_input)
+            # Match the real inference call by including decode=True
+            # This ensures the compiled graph includes the decoding path.
+            _ = model(dummy_input, decode=True, img_size=(args.input_size, args.input_size))
     if device.type == 'cuda':
         torch.cuda.synchronize()
     print("✅ Warmup complete.")
@@ -136,7 +138,8 @@ def profile_model(args):
         for _ in range(args.profile_steps):
             with torch.no_grad():
                 with record_function("model_inference"):
-                    _ = model(dummy_input)
+                    # Profile the full inference path including decoding
+                    _ = model(dummy_input, decode=True, img_size=(args.input_size, args.input_size))
             if device.type == 'cuda':
                 torch.cuda.synchronize() # Ensure accurate timing
     print("✅ Profiling complete.")

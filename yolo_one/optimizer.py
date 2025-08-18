@@ -33,6 +33,7 @@ class YoloOneOptimizer:
         learning_rate: float = 0.001,
         weight_decay: float = 0.0005,
         momentum: float = 0.9,
+        lr_multipliers: Optional[Dict[str, float]] = None,
         betas: tuple = (0.9, 0.999),
         eps: float = 1e-8,
         **kwargs
@@ -46,6 +47,7 @@ class YoloOneOptimizer:
             learning_rate: Initial learning rate
             weight_decay: Weight decay factor
             momentum: Momentum factor (for SGD)
+            lr_multipliers: Optional dictionary to scale LR for different parts of the model.
             betas: Betas for Adam optimizers
             eps: Epsilon for numerical stability
             **kwargs: Additional optimizer arguments
@@ -56,7 +58,7 @@ class YoloOneOptimizer:
         
         # Group parameters by type for different learning rates
         param_groups = YoloOneOptimizer._create_param_groups(
-            model, learning_rate, weight_decay
+            model, learning_rate, weight_decay, lr_multipliers
         )
         
         optimizer_type = optimizer_type.lower()
@@ -110,7 +112,8 @@ class YoloOneOptimizer:
     def _create_param_groups(
         model: torch.nn.Module, 
         base_lr: float, 
-        weight_decay: float
+        weight_decay: float,
+        lr_multipliers: Optional[Dict[str, float]] = None
     ) -> List[Dict[str, Any]]:
         """
         Create parameter groups with different learning rates
@@ -119,11 +122,21 @@ class YoloOneOptimizer:
             model: YOLO-One model
             base_lr: Base learning rate
             weight_decay: Weight decay
+            lr_multipliers: Optional dict with keys like 'backbone', 'neck', 'head'.
             
         Returns:
             List of parameter groups
         """
         
+        # Default multipliers if not provided
+        multipliers = {
+            'backbone': 0.1,
+            'neck': 0.5,
+            'head': 1.0
+        }
+        if lr_multipliers:
+            multipliers.update(lr_multipliers)
+
         # Different learning rates for different components
         backbone_params = []
         neck_params = []
@@ -161,7 +174,7 @@ class YoloOneOptimizer:
         if backbone_params:
             param_groups.append({
                 'params': backbone_params,
-                'lr': base_lr * 0.1,  # 10x lower LR
+                'lr': base_lr * multipliers['backbone'],
                 'weight_decay': weight_decay,
                 'name': 'backbone'
             })
@@ -170,7 +183,7 @@ class YoloOneOptimizer:
         if neck_params:
             param_groups.append({
                 'params': neck_params,
-                'lr': base_lr * 0.5,  # 2x lower LR
+                'lr': base_lr * multipliers['neck'],
                 'weight_decay': weight_decay,
                 'name': 'neck'
             })
@@ -179,7 +192,7 @@ class YoloOneOptimizer:
         if head_params:
             param_groups.append({
                 'params': head_params,
-                'lr': base_lr,
+                'lr': base_lr * multipliers['head'],
                 'weight_decay': weight_decay,
                 'name': 'head'
             })
@@ -241,7 +254,7 @@ class YoloOneOptimizer:
                 
                 cosine_scheduler = CosineAnnealingLR(
                     optimizer,
-                    T_max=total_epochs - warmup_epochs,
+                    T_max=max(1, total_epochs - warmup_epochs),
                     eta_min=optimizer.param_groups[0]['lr'] * min_lr_ratio
                 )
                 
@@ -253,7 +266,7 @@ class YoloOneOptimizer:
             else:
                 scheduler = CosineAnnealingLR(
                     optimizer,
-                    T_max=total_epochs,
+                    T_max=max(1, total_epochs),
                     eta_min=optimizer.param_groups[0]['lr'] * min_lr_ratio
                 )
         

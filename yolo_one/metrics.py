@@ -8,9 +8,8 @@ METRICS MODULE FOR YOLO-ONE
 """
 
 import torch
-from typing import List
+from typing import List, Optional, Tuple
 from torchmetrics.detection import MeanAveragePrecision
-from typing import Tuple
 
 class YoloOneMetrics:
     """
@@ -18,12 +17,16 @@ class YoloOneMetrics:
     Handles decoded predictions and computes mAP if torchmetrics is available.
     """
     
-    def __init__(self, device='cuda', conf_threshold=0.001, iou_threshold=0.6):
+    def __init__(self, device='cuda', conf_threshold: float = 0.001, iou_thresholds: Optional[List[float]] = None):
         self.device = device
         self.conf_threshold = conf_threshold
-        self.iou_threshold = iou_threshold
-        self.map_metric = MeanAveragePrecision(box_format='cxcywh').to(self.device)
 
+        # Use the provided IoU thresholds for mAP calculation.
+        # If None, torchmetrics will use its default [0.5, ..., 0.95].
+        self.map_metric = MeanAveragePrecision(
+            box_format='cxcywh',
+            iou_thresholds=iou_thresholds
+        ).to(self.device)
         self.reset()
     
     def reset(self):
@@ -64,8 +67,16 @@ class YoloOneMetrics:
             conf_mask = pred[:, 4] >= self.conf_threshold
             pred = pred[conf_mask]
 
+            # Scale prediction boxes from normalized [0,1] to pixel coordinates
+            # to match the format expected by torchmetrics and the scaled targets.
+            pred_boxes = pred[:, :4].clone()
+            pred_boxes[:, 0] *= w # scale cx
+            pred_boxes[:, 1] *= h # scale cy
+            pred_boxes[:, 2] *= w # scale w
+            pred_boxes[:, 3] *= h # scale h
+
             preds_for_map.append({
-                'boxes': pred[:, :4],  # [N, 4] in cxcywh format
+                'boxes': pred_boxes,  # [N, 4] in cxcywh pixel format
                 'scores': pred[:, 4],
                 'labels': torch.zeros(pred.shape[0], device=self.device, dtype=torch.int32) # Single class
             })

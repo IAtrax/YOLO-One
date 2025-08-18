@@ -23,7 +23,8 @@ def detect(args: argparse.Namespace):
         confidence_threshold=args.conf,
         nms_threshold=args.iou,
         input_size=args.input_size,
-        model_size=args.model_size
+        model_size=args.model_size,
+        compile_model=args.compile
     )
     print("Inference engine ready.")
 
@@ -68,6 +69,7 @@ if __name__ == "__main__":
     parser.add_argument('--iou', type=float, default=0.45, help='IoU threshold for NMS.')
     parser.add_argument('--device', type=str, default=None, help='Device to use (e.g., cpu, cuda, cuda:0).')
     parser.add_argument('--output-dir', type=str, default='./runs/detect', help='Directory to save output images.')
+    parser.add_argument('--compile', action='store_true', help='Enable torch.compile() for maximum performance (requires a one-time compilation cost).')
 
     args = parser.parse_args()
 

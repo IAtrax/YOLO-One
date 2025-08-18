@@ -363,16 +363,42 @@ class YoloOneDataset(Dataset):
                 # Keep original if augmentation fails
                 pass
 
-        # Resize image
-        if isinstance(image, np.ndarray):
-            image = cv2.resize(image, (self.img_size[1], self.img_size[0]))
-            image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+        # --- Letterbox Preprocessing (to match inference pipeline) ---
+        # This ensures the model trains on data with the same aspect ratio preservation as in production.
+        pre_proc_h, pre_proc_w = image.shape[:2]
+        scale_factor = min(self.img_size[0] / pre_proc_h, self.img_size[1] / pre_proc_w)
+        new_h, new_w = int(pre_proc_h * scale_factor), int(pre_proc_w * scale_factor)
+
+        # Create a padded image with a constant color (114)
+        padded_image = np.full((self.img_size[0], self.img_size[1], 3), 114, dtype=np.uint8)
+        resized_img = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        # Calculate padding and place the resized image
+        pad_top = (self.img_size[0] - new_h) // 2
+        pad_left = (self.img_size[1] - new_w) // 2
+        padded_image[pad_top:pad_top + new_h, pad_left:pad_left + new_w] = resized_img
+
+        # Adjust bounding boxes for letterboxing
+        if annotations:
+            new_annotations = []
+            for ann in annotations:
+                x1, y1, x2, y2 = ann['bbox']
+                # Scale and pad the box coordinates to match the padded image
+                new_bbox = [
+                    x1 * scale_factor + pad_left, y1 * scale_factor + pad_top,
+                    x2 * scale_factor + pad_left, y2 * scale_factor + pad_top
+                ]
+                new_annotations.append({'bbox': new_bbox})
+            annotations = new_annotations
+
+        # Convert image to tensor
+        image_tensor = torch.from_numpy(padded_image).permute(2, 0, 1).float() / 255.0
 
         # Convert annotations to tensor
         targets = self._annotations_to_tensor(annotations)
 
         return {
-            'image': image,
+            'image': image_tensor,
             'targets': targets,
             'image_path': str(img_path),
             'original_size': (original_h, original_w)

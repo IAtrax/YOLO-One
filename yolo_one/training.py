@@ -181,9 +181,12 @@ class YoloOneTrainer:
         """Create metrics evaluator"""
         
         metrics_config = self.config['metrics']
-        
-        metrics = YoloOneMetrics(device=self.device)
-        
+
+        metrics = YoloOneMetrics(
+            device=self.device,
+            conf_threshold=metrics_config.get('confidence_threshold', 0.001),
+            iou_thresholds=metrics_config.get('iou_thresholds', None)
+        )
         
         return metrics
     

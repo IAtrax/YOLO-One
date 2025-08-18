@@ -63,6 +63,11 @@ class YoloOneConfig:
                     'optimizer_type': 'adamw',
                     'learning_rate': 0.001,
                     'weight_decay': 0.0005,
+                    'lr_multipliers': {
+                        'backbone': 0.1,
+                        'neck': 0.5,
+                        'head': 1.0
+                    },
                     'betas': [0.9, 0.999],
                     'eps': 1e-8
                 },

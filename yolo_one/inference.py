@@ -36,7 +36,7 @@ class YoloOneInference:
         model_size: str = 'nano',
         input_size: int = 640,
         half_precision: bool = True,
-        compile_model: bool = True,
+        compile_model: bool = False,
         warmup_iterations: int = 3
     ):
         """
@@ -51,9 +51,10 @@ class YoloOneInference:
             model_size: Model size ('nano', 'small', etc.)
             input_size: Model input size (square)
             half_precision: Use FP16 for faster inference
-            compile_model: Use torch.compile() for maximum speed
+            compile_model: Use torch.compile() for maximum speed (disabled by default)
             warmup_iterations: GPU warmup iterations
         """
+        init_start_time = time.time()
         
         self.device = torch.device(device)
         self.confidence_threshold = confidence_threshold
@@ -87,11 +88,14 @@ class YoloOneInference:
         if warmup_iterations > 0 and self.device.type == 'cuda':
             self._warmup_gpu(warmup_iterations)
         
+        init_time = time.time() - init_start_time
+
         # Performance tracking
         self.inference_times = []
         self.preprocessing_times = []
         self.postprocessing_times = []
         
+        logging.info(f"Initialization time: {init_time*1000:.2f}ms (includes model loading, compilation, and warmup)")
         logging.info(f"YOLO-One inference engine ready on {self.device}")
         logging.info(f"Confidence: {confidence_threshold}, NMS: {nms_threshold}")
         logging.info(f"Half Precision: {self.half_precision}, Compiled: {self.compile_model}, Channels Last: {self.channels_last}")
@@ -158,7 +162,11 @@ class YoloOneInference:
             dummy_input = dummy_input.to(memory_format=torch.channels_last)
         with torch.no_grad():
             for _ in range(iterations):
-                _ = self.model(dummy_input)
+                _ = self.model(
+                    dummy_input,
+                    decode=True,
+                    img_size=(self.input_size, self.input_size)
+                )
         
         torch.cuda.empty_cache()
         logging.info("GPU warmup completed")
@@ -493,7 +501,7 @@ def create_yolo_one_inference(
     model_size: str = 'nano',
     input_size: int = 640,
     half_precision: bool = True,
-    compile_model: bool = True
+    compile_model: bool = False
 ) -> YoloOneInference:
     """
     Factory function to create YOLO-One inference engine
@@ -506,7 +514,7 @@ def create_yolo_one_inference(
         model_size: Model size ('nano', 'small', etc.)
         input_size: Model input size
         half_precision: Use FP16 for speed optimization
-        compile_model: Use torch.compile() for maximum speed
+        compile_model: Use torch.compile() for maximum speed (disabled by default)
         
     Returns:
         Configured YOLO-One inference engine
@@ -537,7 +545,7 @@ if __name__ == "__main__":
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use (e.g., cuda, cpu).')
     parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold.')
     parser.add_argument('--iou', type=float, default=0.45, help='IoU threshold for NMS.')
-    parser.add_argument('--no-compile', action='store_true', help='Disable torch.compile() for debugging.')
+    parser.add_argument('--compile', action='store_true', help='Enable torch.compile() for maximum performance.')
     args = parser.parse_args()
     
     # Initialize YOLO-One inference engine
@@ -547,7 +555,7 @@ if __name__ == "__main__":
         confidence_threshold=args.conf,
         nms_threshold=args.iou,
         model_size=args.model_size,
-        compile_model=not args.no_compile
+        compile_model=args.compile
     )
     
     # Load the image before passing it to the engine
