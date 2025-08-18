@@ -615,6 +615,7 @@ def main():
         results = trainer.train()
         print(f"\n🎉 Training successful!")
         print(f"Best mAP: {results['best_map']:.4f}")
+        print(f'The box loss function used in this model is : {args.iou_type}')
         print(f"Final model saved to: {trainer.run_dir}")
         
     except KeyboardInterrupt:

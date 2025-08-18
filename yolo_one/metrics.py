@@ -7,37 +7,87 @@ METRICS MODULE FOR YOLO-ONE
 
 """
 
-class SimpleYoloOneMetrics:
-    """Simplified metrics for debugging"""
+import torch
+from typing import List
+from torchmetrics.detection import MeanAveragePrecision
+
+class YoloOneMetrics:
+    """
+    Comprehensive metrics for YOLO-One validation.
+    Handles decoded predictions and computes mAP if torchmetrics is available.
+    """
     
-    def __init__(self, device='cuda'):
+    def __init__(self, device='cuda', conf_threshold=0.001, iou_threshold=0.6):
         self.device = device
+        self.conf_threshold = conf_threshold
+        self.iou_threshold = iou_threshold
+        self.map_metric = MeanAveragePrecision(box_format='cxcywh').to(self.device)
+
         self.reset()
     
     def reset(self):
-        self.total_predictions = 0
-        self.total_targets = 0
+        """Resets the state of the metrics."""
+        if self.map_metric:
+            self.map_metric.reset()
+        self.inference_times = []
     
-    def update(self, predictions, targets, **kwargs):
-        """Simplified update without heavy computation"""
+    def update(self, predictions: List[torch.Tensor], targets: torch.Tensor, **kwargs):
+        """
+        Update metrics with a batch of decoded predictions and targets.
+
+        Args:
+            predictions (List[torch.Tensor]): List of decoded prediction tensors from different FPN levels.
+                                              Each tensor is [B, 5, H, W] on the correct device.
+            targets (torch.Tensor): Ground truth targets [N, 6] (batch_idx, class, xc, yc, w, h) on the correct device.
+        """
+        if not self.map_metric:
+            return
+
+        # Concatenate predictions from all levels and reshape
+        # [B, 5, H, W] -> [B, H, W, 5] -> [B, N, 5]
+        # Predictions are already on the correct device
+        all_preds = [p.permute(0, 2, 3, 1).reshape(p.shape[0], -1, 5) for p in predictions]
+        batch_preds = torch.cat(all_preds, dim=1)  # [B, Total_N, 5]
+
+        # Prepare data for torchmetrics
+        preds_for_map = []
+        targets_for_map = []
+
+        for i in range(batch_preds.shape[0]):
+            # Filter predictions by confidence
+            pred = batch_preds[i]
+            conf_mask = pred[:, 4] >= self.conf_threshold
+            pred = pred[conf_mask]
+
+            preds_for_map.append({
+                'boxes': pred[:, :4],  # [N, 4] in cxcywh format
+                'scores': pred[:, 4],
+                'labels': torch.zeros(pred.shape[0], device=self.device, dtype=torch.int32) # Single class
+            })
+
+            # Filter targets for the current image
+            target = targets[targets[:, 0] == i]
+            targets_for_map.append({
+                'boxes': target[:, 2:], # [M, 4] in cxcywh format
+                'labels': torch.zeros(target.shape[0], device=self.device, dtype=torch.int32) # Single class
+            })
+
+        # Update the mAP metric
+        self.map_metric.update(preds_for_map, targets_for_map)
         
-        # Count only, no processing
-        if isinstance(predictions, dict):
-            pred_tensor = predictions['detections'][0]
-        else:
-            pred_tensor = predictions[0]
-        
-        batch_size = pred_tensor.shape[0]
-        self.total_predictions += batch_size
-        self.total_targets += len(targets)
-        
-        print(f"📊 Batch processed: {batch_size} predictions, {len(targets)} targets")
+        if 'inference_time' in kwargs:
+            self.inference_times.append(kwargs['inference_time'])
     
     def compute(self):
-        """Return simple metrics"""
-        return {
-            'total_predictions': self.total_predictions,
-            'total_targets': self.total_targets,
-            'mAP': 0.5,  # Dummy value
-            'avg_loss': 0.1  # Dummy value
+        """Compute the final metrics for the epoch."""
+        if not self.map_metric:
+            return {'mAP': 0.0, 'mAP@0.5': 0.0}
+
+        map_results = self.map_metric.compute()
+        
+        metrics = {
+            'mAP': map_results['map'].item(),
+            'mAP@0.5': map_results['map_50'].item(),
+            'mAP@0.75': map_results['map_75'].item(),
         }
+        return metrics

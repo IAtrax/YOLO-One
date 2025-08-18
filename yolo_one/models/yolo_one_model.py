@@ -14,12 +14,12 @@ class YoloOne(nn.Module):
         # Create each component using its factory function
         self.backbone = create_yolo_one_backbone(model_size)
         self.neck = create_yolo_one_neck(model_size, self.backbone.out_channels)
-        self.head = create_yolo_one_head(model_size, self.neck.out_channels)
+        self.head = create_yolo_one_head(model_size, in_channels=self.neck.out_channels)
     
-    def forward(self, x):
+    def forward(self, x, decode=False, img_size=None):
         features = self.backbone(x)
         features = self.neck(features)
-        outputs = self.head(features)
+        outputs = self.head(features, decode=decode, img_size=img_size)
         return outputs
 
         

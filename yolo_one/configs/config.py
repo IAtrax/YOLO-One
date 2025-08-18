@@ -364,14 +364,9 @@ def create_yolo_one_config(
         else:
             raise ValueError(f"Unsupported model size: {model_size}")
 
-
-# Example usage configurations
-YOLO_ONE_CONFIGS = {
-    'nano_general': YoloOneConfig.get_nano_config(),
-    'small_general': YoloOneConfig.get_small_config(),
-    'medium_general': YoloOneConfig.get_medium_config(),
-    'large_general': YoloOneConfig.get_large_config(),
-    'mobile': YoloOneConfig.get_mobile_config(),
-    'edge': YoloOneConfig.get_edge_config(),
-    'high_accuracy': YoloOneConfig.get_high_accuracy_config()
-}
+MODEL_SIZE_MULTIPLIERS = {
+        'nano':   {'width': 0.25, 'depth': 0.33},
+        'small':  {'width': 0.50, 'depth': 0.33},
+        'medium': {'width': 0.75, 'depth': 0.67},
+        'large':  {'width': 1.00, 'depth': 1.00},
+    }

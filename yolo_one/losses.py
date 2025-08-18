@@ -5,6 +5,7 @@ LICENSE: MIT
 
 YOLO-ONE LOSS MODULE - ANCHOR-FREE
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -593,7 +594,12 @@ def create_yolo_one_loss(
         focal_gamma=focal_gamma,
         iou_type=iou_type,
         label_smoothing=label_smoothing,
+<<<<<<< HEAD
         p5_weight_boost=p5_weight_boost,
         theta = theta,
         focal_loss=focal_loss
     )
+=======
+        p5_weight_boost=p5_weight_boost
+    )
+>>>>>>> 9c24f5a62b2e62de27cee5aac94701ed4c47af96
