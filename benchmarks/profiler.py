@@ -3,6 +3,11 @@ import argparse
 from torch.profiler import profile, record_function, ProfilerActivity
 import sys
 from pathlib import Path
+try:
+    from thop import profile as thop_profile
+    thop_available = True
+except ImportError:
+    thop_available = False
 
 # Add project root to path to allow direct script execution
 sys.path.append(str(Path(__file__).parent.parent))
@@ -14,7 +19,7 @@ def profile_model(args):
     Profiles the YOLO-One model to identify performance bottlenecks.
     """
     device = torch.device(args.device)
-    use_half = args.half and device.type == 'cuda'
+    use_half = (not args.no_half) and device.type == 'cuda'
     use_compile = args.compile and device.type == 'cuda'
     use_channels_last = device.type == 'cuda' # Channels-last is now default for CUDA
     print(f"🚀 Starting Profiler on device: {device}")
@@ -42,9 +47,6 @@ def profile_model(args):
             # This comparison highlights the "compile-friendliness" of an architecture.
             model = YOLO(f'yolov8{args.model_size}.pt').model.to(device)
 
-        # Calculate and print parameter count
-        total_params = sum(p.numel() for p in model.parameters())
-        print(f"📦 Model parameters: {total_params:,} ({total_params/1e6:.2f}M)")
 
         if use_half:
             model.half()
@@ -53,6 +55,28 @@ def profile_model(args):
         if use_channels_last:
             print("Converting model to channels-last memory format...")
             model = model.to(memory_format=torch.channels_last)
+
+        # 2. Create Dummy Input for FLOPs calculation (before compilation)
+        # thop needs a model before it's compiled
+        flops_input = torch.randn(
+            1, 3, args.input_size, args.input_size,
+            device=device,
+            dtype=torch.float16 if use_half else torch.float32
+        )
+        if use_channels_last:
+            flops_input = flops_input.to(memory_format=torch.channels_last)
+
+        # Calculate FLOPs and Params using thop
+        if thop_available:
+            # Note: thop might not support all custom ops or compiled models perfectly.
+            # It's best to run it on the un-compiled model.
+            total_macs, total_params = thop_profile(model, inputs=(flops_input, ), verbose=False)
+            # FLOPs is approx. 2 * MACs
+            gflops = (total_macs * 2) / 1e9
+            print(f"📦 Model Complexity: {total_params/1e6:.2f}M params, {gflops:.2f} GFLOPs")
+        else:
+            total_params = sum(p.numel() for p in model.parameters())
+            print(f"📦 Model Parameters: {total_params/1e6:.2f}M (thop not installed, cannot calculate FLOPs)")
 
         if use_compile:
             print("\n[+] Compiling model with torch.compile()... (this may take a moment)")
@@ -196,9 +220,9 @@ if __name__ == "__main__":
     parser.add_argument('--warmup-steps', type=int, default=10, help='Number of warmup iterations before profiling.')
     parser.add_argument('--profile-steps', type=int, default=20, help='Number of profiling iterations.')
     parser.add_argument('--trace-file', type=str, default=None, help='Optional: Path to save a Chrome trace file (e.g., trace.json).')
-    parser.add_argument('--half', action='store_true', help='Use half-precision (FP16) for profiling on CUDA.')
     parser.add_argument('--detailed', action='store_true', help='Show detailed operator-level profiling tables.')
     parser.add_argument('--compile', action='store_true', help='Enable torch.compile() for optimization on CUDA.')
+    parser.add_argument('--no-half', action='store_true', help='Disable half-precision (FP16) for profiling on CUDA (FP16 is enabled by default).')
 
     args = parser.parse_args()
     profile_model(args)

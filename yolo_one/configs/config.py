@@ -49,6 +49,7 @@ class YoloOneConfig:
             'loss': {
                 'box_weight': 7.5,
                 'obj_weight': 1.0,
+                'obj_neg_weight': 0.05,
                 'focal_alpha': 0.25,
                 'focal_gamma': 1.5,
                 'iou_type': 'ciou',

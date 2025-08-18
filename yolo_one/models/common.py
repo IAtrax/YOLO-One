@@ -68,11 +68,11 @@ class SpatialAttention(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # torch.mean can upcast to float32 to preserve precision.
-        # We must cast it back to the input's dtype to avoid type mismatch in the following conv layer.
-        avg_pool = torch.mean(x, dim=1, keepdim=True).to(x.dtype)
+        # Ensure dtype consistency, as torch.mean can upcast to float32.
+        avg_pool = torch.mean(x, dim=1, keepdim=True)
         max_pool, _ = torch.max(x, dim=1, keepdim=True)
-        attention = self.sigmoid(self.conv(torch.cat([avg_pool, max_pool], dim=1)))
+        # The cat operation will handle dtype promotion if needed, but conv requires consistent input.
+        attention = self.sigmoid(self.conv(torch.cat([avg_pool, max_pool], dim=1).to(x.dtype)))
         return x * attention
 
 class ChannelAttention(nn.Module): # from https://github.com/open-mmlab/mmdetection/tree/v3.0.0rc1/configs/rtmdet
@@ -182,8 +182,7 @@ class GatingNetwork(nn.Module):
         """
         Forward pass to get gating scores.
         """
-        # AdaptiveAvgPool2d can upcast to float32. Cast back to input dtype
-        # to avoid mixed-precision errors in the following linear layers.
-        pooled_features = self.pool(x).to(x.dtype)
+        # Ensure dtype consistency before flattening and passing to linear layers.
+        pooled_features = self.pool(x)
         flat_features = self.flatten(pooled_features)
-        return self.gate(flat_features)
+        return self.gate(flat_features.to(x.dtype))

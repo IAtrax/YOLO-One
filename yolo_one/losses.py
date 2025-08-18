@@ -27,6 +27,7 @@ class YoloOneLoss(nn.Module):
         focal_alpha: float = 0.25,
         moe_balance_weight: float = 0.05,
         focal_gamma: float = 1.5,
+        obj_neg_weight: float = 0.05,
         iou_type: str = 'meiou',
         label_smoothing: float = 0.0,
         p5_weight_boost: float = 1.2
@@ -40,6 +41,7 @@ class YoloOneLoss(nn.Module):
         self.focal_alpha = focal_alpha
         self.moe_balance_weight = moe_balance_weight
         self.focal_gamma = focal_gamma
+        self.obj_neg_weight = obj_neg_weight
         self.iou_type = iou_type
         self.label_smoothing = label_smoothing
         self.p5_weight_boost = p5_weight_boost
@@ -336,7 +338,7 @@ class YoloOneLoss(nn.Module):
         pos_loss = bce_loss[pos_mask].mean() if pos_mask.sum() > 0 else torch.tensor(0.0, device=pred_conf.device)
         neg_loss = bce_loss[neg_mask].mean() if neg_mask.sum() > 0 else torch.tensor(0.0, device=pred_conf.device)
         
-        return pos_loss + 0.05 * neg_loss
+        return pos_loss + self.obj_neg_weight * neg_loss
     
     def _ciou_loss(self, pred_boxes: torch.Tensor, target_boxes: torch.Tensor) -> torch.Tensor:
         """Complete IoU loss implementation for anchor-free"""
@@ -497,6 +499,7 @@ def create_yolo_one_loss(
     focal_alpha: float = 0.25,
     moe_balance_weight: float = 0.05,
     focal_gamma: float = 1.5,
+    obj_neg_weight: float = 0.05,
     iou_type: str = 'meiou',
     label_smoothing: float = 0.0,
     p5_weight_boost: float = 1.2
@@ -510,6 +513,7 @@ def create_yolo_one_loss(
         focal_alpha=focal_alpha,
         moe_balance_weight=moe_balance_weight,
         focal_gamma=focal_gamma,
+        obj_neg_weight=obj_neg_weight,
         iou_type=iou_type,
         label_smoothing=label_smoothing,
         p5_weight_boost=p5_weight_boost
