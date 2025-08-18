@@ -158,12 +158,17 @@ class YoloOneDetectionHead(nn.Module):
         x: List[torch.Tensor],
         decode: bool = False,
         img_size: Optional[Sequence[int]] = None,
-        expert_indices: Optional[torch.Tensor] = None,
+        gate_scores: Optional[torch.Tensor] = None,
     ) -> Dict[str, List[torch.Tensor]]:
         if not isinstance(x, (list, tuple)) or len(x) != len(self.in_channels):
             raise ValueError("Expected a list [P3, P4, P5] matching configured in_channels")
 
-        # --- MoE Hard Routing Path (for inference) ---
+        # --- MoE Hard Routing Path (for inference speed) ---
+        # If we are not training and gate_scores are provided, we select the best expert.
+        expert_indices = None
+        if not self.training and gate_scores is not None:
+            expert_indices = torch.argmax(gate_scores, dim=1)
+
         if expert_indices is not None:
             batch_size = x[0].shape[0]
             
@@ -189,7 +194,8 @@ class YoloOneDetectionHead(nn.Module):
                     obj_logits[i][batch_mask] = out["obj_logits"]
                     bboxs[i][batch_mask] = out["bbox"]
 
-        # --- Standard Path (no MoE or during training) ---
+        # --- Standard Path (during training, or if no gating is used) ---
+        # During training, we process all heads to compute gradients for all experts.
         else:
             detections: List[torch.Tensor] = []
             obj_logits: List[torch.Tensor] = []
