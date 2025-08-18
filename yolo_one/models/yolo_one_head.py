@@ -120,6 +120,7 @@ class YoloOneDetectionHead(nn.Module):
         self.return_features: bool = bool(config.get("return_features", True))
         self.refine_features: bool = bool(config.get("refine_features", False))
         obj_prior: float = float(config.get("obj_prior", 0.01))
+        self.moe_routing_threshold: float = float(config.get("moe_routing_threshold", 0.5)) # Default to 50%
 
         # Build per-level heads
         self.level_heads = nn.ModuleList()
@@ -163,25 +164,57 @@ class YoloOneDetectionHead(nn.Module):
         if not isinstance(x, (list, tuple)) or len(x) != len(self.in_channels):
             raise ValueError("Expected a list [P3, P4, P5] matching configured in_channels")
 
-        # --- MoE Hard Routing Path (for inference speed) ---
-        # If we are not training and gate_scores are provided, we select the best expert.
-        expert_indices = None
-        if not self.training and gate_scores is not None:
-            expert_indices = torch.argmax(gate_scores, dim=1)
+        # --- MoE Dynamic Routing Path (for inference) ---
+        # If we are not training and gate_scores are provided, we use threshold-based routing.
+        use_moe_routing = not self.training and gate_scores is not None
 
-        if expert_indices is not None:
+        if use_moe_routing:
+            # --- Advanced MoE Routing Logic ---
+            # 1. Find experts with scores above the threshold.
+            above_threshold_mask = gate_scores > self.moe_routing_threshold
+
+            # 2. Count how many experts are activated per image in the batch.
+            num_above_threshold = above_threshold_mask.sum(dim=1)
+
+            # 3. Identify which images activate only one expert vs. multiple.
+            single_expert_mask = (num_above_threshold == 1).unsqueeze(1)
+            multi_expert_mask = (num_above_threshold > 1).unsqueeze(1)
+
+            # 4. For the multi-expert case, create a mask for only the top 2 experts.
+            top2_indices = torch.topk(gate_scores, k=2, dim=1).indices
+            top2_mask = torch.zeros_like(gate_scores, dtype=torch.bool).scatter_(1, top2_indices, True)
+
+            # 5. Combine the logic:
+            #    - If 1 expert is above threshold, use it.
+            #    - If >1 experts are above threshold, use the top 2 (max 2 heads).
+            #    - If 0 experts are above threshold, use none.
+            experts_to_use = (above_threshold_mask * single_expert_mask) | (top2_mask * multi_expert_mask)
+
+            # --- Fallback Mechanism ---
+            # If no expert was selected for an image (all scores < threshold),
+            # activate the single best one (argmax) to ensure a prediction is always made.
+            num_activated = experts_to_use.sum(dim=1)
+            fallback_mask = (num_activated == 0)
+            if fallback_mask.any():
+                # Get the indices of the top-scoring expert for the fallback images
+                fallback_indices = torch.argmax(gate_scores[fallback_mask], dim=1)
+                experts_to_use[fallback_mask, fallback_indices] = True
+
             batch_size = x[0].shape[0]
             
-            # Initialize full-sized output tensors for each level with zeros.
-            # We will fill these with the results from the selected experts.
-            detections = [torch.zeros(batch_size, 5, *feat.shape[2:], device=feat.device, dtype=feat.dtype) for feat in x]
-            obj_logits = [torch.zeros(batch_size, 1, *feat.shape[2:], device=feat.device, dtype=feat.dtype) for feat in x]
+            # Initialize full-sized output tensors. For non-activated experts,
+            # we set the objectness logit to a very low value to ensure its
+            # confidence becomes 0 after sigmoid, preventing false positives.
+            obj_logits = [torch.full((batch_size, 1, *feat.shape[2:]), -1e9, device=feat.device, dtype=feat.dtype) for feat in x]
             bboxs = [torch.zeros(batch_size, 4, *feat.shape[2:], device=feat.device, dtype=feat.dtype) for feat in x]
+            
+            # We will construct the 'detections' list later from the filled obj_logits and bboxs
+            detections = [] # Will be populated after the loop
 
             # Iterate through each expert (level_head)
             for i, level_head in enumerate(self.level_heads):
                 # Find which items in the batch selected this expert
-                batch_mask = (expert_indices == i)
+                batch_mask = experts_to_use[:, i]  # [B]
                 if batch_mask.any():
                     # Get the input features for the selected batch items
                     feat_slice = x[i][batch_mask]
@@ -190,7 +223,6 @@ class YoloOneDetectionHead(nn.Module):
                     out = level_head(feat_slice)
                     
                     # Scatter the results back into the full-sized tensors
-                    detections[i][batch_mask] = out["detections"]
                     obj_logits[i][batch_mask] = out["obj_logits"]
                     bboxs[i][batch_mask] = out["bbox"]
 
@@ -211,6 +243,10 @@ class YoloOneDetectionHead(nn.Module):
                 if self.return_features:
                     feats.append(out["feat"])
 
+        # If MoE routing was used, we need to construct the 'detections' list now
+        if use_moe_routing:
+            detections = [torch.cat([obj, bbox], dim=1) for obj, bbox in zip(obj_logits, bboxs)]
+
         outputs: Dict[str, List[torch.Tensor]] = {
             "detections": detections,
             "obj_logits": obj_logits,
@@ -220,7 +256,7 @@ class YoloOneDetectionHead(nn.Module):
             # In MoE mode, the concept of a full feature pyramid is ill-defined
             # as only one level is processed per image. Return an empty list
             # to maintain API consistency without incurring memory overhead.
-            if expert_indices is None:
+            if not use_moe_routing:
                 outputs["features"] = feats
 
         if decode:
@@ -228,11 +264,24 @@ class YoloOneDetectionHead(nn.Module):
                 raise ValueError("img_size=[H_img, W_img] is required when decode=True")
             h_img, w_img = int(img_size[0]), int(img_size[1])
 
+            # Determine which experts were activated for at least one image in the batch.
+            # This avoids expensive decoding for heads that were completely unused.
+            if use_moe_routing:
+                any_expert_activated = experts_to_use.any(dim=0)
+            else:
+                # During training or non-MoE inference, all heads are active.
+                any_expert_activated = torch.ones(len(self.level_heads), dtype=torch.bool, device=x[0].device)
+
             decoded: List[torch.Tensor] = []
-            for pred, stride in zip(detections, self.strides):
+            for i, (pred, stride) in enumerate(zip(detections, self.strides)):
+                # If this expert was not activated for any image in the batch, skip it entirely.
+                if not any_expert_activated[i]:
+                    continue
+
+                # Perform the full decoding logic only for activated heads.
                 b, _, hk, wk = pred.shape
                 obj = torch.sigmoid(pred[:, :1])     # [B, 1, Hk, Wk]
-                xy = torch.sigmoid(pred[:, 1:3])     # [B, 2, Hk, Wk] cell offsets in [0,1]
+                xy = torch.sigmoid(pred[:, 1:3])     # [B, 2, Hk, Wk] cell offsets in [0, 1]
                 wh = F.softplus(pred[:, 3:5])        # [B, 2, Hk, Wk] positive sizes
 
                 grid = self._make_grid(hk, wk, pred.device)   # [2, Hk, Wk]
@@ -295,5 +344,6 @@ def create_yolo_one_head(
         "return_features": kwargs.get("return_features", True),
         "refine_features": kwargs.get("refine_features", False),
         "obj_prior": kwargs.get("obj_prior", 0.01),
+        "moe_routing_threshold": kwargs.get("moe_routing_threshold", 0.5), # Default to 50%
     }
     return YoloOneDetectionHead(config)

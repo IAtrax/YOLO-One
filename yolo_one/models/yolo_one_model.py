@@ -50,26 +50,21 @@ class YoloOne(nn.Module):
         self.gating_network = GatingNetwork(gating_in_channels, num_experts)
 
     def forward(self, x: torch.Tensor, decode: bool = False, img_size=None):
-        with torch.autograd.profiler.record_function("YoloOne::Backbone"):
-            features = self.backbone(x)
-        
-        with torch.autograd.profiler.record_function("YoloOne::Neck"):
-            fused_features = self.neck(features)
+        features = self.backbone(x)
+        fused_features = self.neck(features)
 
         # MoE Gating is now native
-        with torch.autograd.profiler.record_function("YoloOne::MoE_Gating"):
-            # The GatingNetwork from common.py handles pooling internally
-            gate_scores = self.gating_network(features[-1])
+        # The GatingNetwork from common.py handles pooling internally
+        gate_scores = self.gating_network(features[-1])
 
-        with torch.autograd.profiler.record_function("YoloOne::Head"):
-            # The head now receives the soft gate_scores for routing.
-            # It can decide to perform hard routing (argmax) internally during inference.
-            outputs = self.head(
-                fused_features, 
-                decode=decode, 
-                img_size=img_size,
-                gate_scores=gate_scores
-            )
+        # The head now receives the soft gate_scores for routing.
+        # It can decide to perform hard routing (argmax) internally during inference.
+        outputs = self.head(
+            fused_features, 
+            decode=decode, 
+            img_size=img_size,
+            gate_scores=gate_scores
+        )
         
         # Add gate_scores to the output dict for the loss function
         if isinstance(outputs, dict):
