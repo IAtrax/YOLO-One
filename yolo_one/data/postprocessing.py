@@ -5,9 +5,13 @@ Iatrax Team - 2025 - https://iatrax.com
 Complete post-processing pipeline for YOLO-One detections
 """
 import torch
-import torch.nn.functional as F
-import numpy as np
 from typing import List, Tuple, Dict, Optional
+try:
+    from torchvision.ops import nms
+except ImportError:
+    nms = None
+
+from yolo_one.utils.general import box_cxcywh_to_xyxy
 
 class YoloOnePostProcessor:
     """
@@ -39,13 +43,15 @@ class YoloOnePostProcessor:
     def process_batch(
         self, 
         predictions: List[torch.Tensor],
-        original_shapes: Optional[List[Tuple[int, int]]] = None
+        original_shapes: List[Tuple[int, int]],
+        scale_factors: List[float],
+        paddings: List[Tuple[int, int]]
     ) -> List[Dict]:
         """
         Process a batch of predictions
         
         Args:
-            predictions: List of DECODED prediction tensors from the model head.
+            predictions: List of DECODED prediction tensors from the model head for the whole batch.
                          Each tensor is [B, 5, H, W] -> (xc, yc, w, h, conf).
             original_shapes: Original image shapes for rescaling
             
@@ -56,8 +62,6 @@ class YoloOnePostProcessor:
         batch_results = []
         
         for batch_idx in range(batch_size):
-            # Extract predictions for this image
-            # The decoded output is already per-image, just need to extract it
             image_predictions = [pred[batch_idx:batch_idx+1] for pred in predictions]
 
             # Flatten and concatenate all predictions for the current image
@@ -66,14 +70,13 @@ class YoloOnePostProcessor:
             # Process single image
             detections = self.process_single_image(all_preds)
             
-            # Rescale to original image size if provided
-            if original_shapes is not None:
-                detections = self.rescale_detections(
-                    detections, 
-                    self.input_size, 
-                    original_shapes[batch_idx]
-                )
-            
+            # Rescale to original image size
+            detections = self.rescale_detections(
+                detections,
+                scale_factors[batch_idx],
+                paddings[batch_idx],
+                original_shapes[batch_idx]
+            )
             batch_results.append(detections)
         
         return batch_results
@@ -88,24 +91,19 @@ class YoloOnePostProcessor:
         Returns:
             Dictionary with processed detections
         """
+        # Predictions are normalized to image size [0, 1]
         # Apply confidence filtering
         confident_preds = self.filter_by_confidence(predictions)
 
         if confident_preds.shape[0] == 0:
-            return self.format_detections(torch.empty(0, 6))
+            return self.format_detections(torch.empty(0, 5, device=predictions.device))
 
-        # Convert to corner format for NMS
-        boxes_xywh = confident_preds[:, :4]
+        # Convert to corner format (xyxy) for NMS
+        boxes_xyxy = box_cxcywh_to_xyxy(confident_preds[:, :4])
         scores = confident_preds[:, 4]
-        
-        boxes_xyxy = torch.empty_like(boxes_xywh)
-        boxes_xyxy[:, 0] = boxes_xywh[:, 0] - boxes_xywh[:, 2] / 2
-        boxes_xyxy[:, 1] = boxes_xywh[:, 1] - boxes_xywh[:, 3] / 2
-        boxes_xyxy[:, 2] = boxes_xywh[:, 0] + boxes_xywh[:, 2] / 2
-        boxes_xyxy[:, 3] = boxes_xywh[:, 1] + boxes_xywh[:, 3] / 2
 
         # Apply Non-Maximum Suppression
-        final_detections = self.apply_nms(torch.cat([boxes_xyxy, scores.unsqueeze(1), scores.unsqueeze(1)], dim=1))
+        final_detections = self.apply_nms(torch.cat([boxes_xyxy, scores.unsqueeze(1)], dim=1))
 
         # Format output
         return self.format_detections(final_detections)
@@ -115,7 +113,7 @@ class YoloOnePostProcessor:
         Filter detections by confidence threshold
         
         Args:
-            detections: Detection tensor [N, 6]
+            detections: Detection tensor [N, 5] (xc, yc, w, h, conf)
             
         Returns:
             Filtered detections
@@ -131,7 +129,7 @@ class YoloOnePostProcessor:
         Apply Non-Maximum Suppression
         
         Args:
-            detections: Detection tensor [N, 6]
+            detections: Detection tensor [N, 5] (x1, y1, x2, y2, score)
             
         Returns:
             NMS filtered detections
@@ -151,114 +149,50 @@ class YoloOnePostProcessor:
         boxes = detections[:, :4]
         scores = detections[:, 4]
         
-        # Apply NMS
-        keep_indices = self.nms(boxes, scores, self.iou_threshold)
+        if nms is None:
+            raise ImportError("torchvision is not installed. Please install it to use NMS (`pip install torchvision`).")
+
+        # Apply the highly optimized torchvision NMS
+        keep_indices = nms(boxes, scores, self.iou_threshold)
         
-        # Limit final detections
+        # Limit final detections after NMS
         keep_indices = keep_indices[:self.max_detections]
         
         return detections[keep_indices]
-    
-    def nms(self, boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:
-        """
-        Non-Maximum Suppression implementation
-        
-        Args:
-            boxes: Bounding boxes [N, 4] (x1, y1, x2, y2)
-            scores: Confidence scores [N]
-            iou_threshold: IoU threshold
-            
-        Returns:
-            Indices of boxes to keep
-        """
-        if boxes.shape[0] == 0:
-            return torch.empty(0, dtype=torch.long, device=boxes.device)
-        
-        # Calculate areas
-        areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
-        
-        # Sort by scores
-        _, order = scores.sort(descending=True)
-        
-        keep = []
-        while order.numel() > 0:
-            # Keep highest scoring box
-            i = order[0].item()
-            keep.append(i)
-            
-            if order.numel() == 1:
-                break
-            
-            # Calculate IoU with remaining boxes
-            rest_boxes = boxes[order[1:]]
-            ious = self.calculate_iou(boxes[i:i+1], rest_boxes)
-            
-            # Keep boxes with IoU < threshold
-            mask = ious[0] <= iou_threshold
-            order = order[1:][mask]
-        
-        return torch.tensor(keep, dtype=torch.long, device=boxes.device)
-    
-    def calculate_iou(self, boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
-        """
-        Calculate IoU between boxes
-        
-        Args:
-            boxes1: First set of boxes [N, 4]
-            boxes2: Second set of boxes [M, 4]
-            
-        Returns:
-            IoU matrix [N, M]
-        """
-        # Calculate intersection
-        inter_x1 = torch.max(boxes1[:, None, 0], boxes2[:, 0])
-        inter_y1 = torch.max(boxes1[:, None, 1], boxes2[:, 1])
-        inter_x2 = torch.min(boxes1[:, None, 2], boxes2[:, 2])
-        inter_y2 = torch.min(boxes1[:, None, 3], boxes2[:, 3])
-        
-        inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * \
-                    torch.clamp(inter_y2 - inter_y1, min=0)
-        
-        # Calculate areas
-        area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
-        area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
-        
-        # Calculate union
-        union_area = area1[:, None] + area2 - inter_area
-        
-        # Calculate IoU
-        iou = inter_area / torch.clamp(union_area, min=1e-6)
-        
-        return iou
-    
+
     def rescale_detections(
         self, 
         detections: Dict, 
-        model_size: Tuple[int, int], 
+        scale_factor: float,
+        padding: Tuple[int, int],
         original_size: Tuple[int, int]
     ) -> Dict:
         """
-        Rescale detections to original image size
+        Rescale detections from model input size to original image size,
+        accounting for letterbox padding.
         
         Args:
             detections: Detection dictionary
-            model_size: Model input size (H, W)
+            scale_factor: The factor used to scale the image.
+            padding: The padding added to the image (pad_left, pad_top).
             original_size: Original image size (H, W)
             
         Returns:
             Rescaled detections
         """
-        if len(detections['boxes']) == 0:
+        if detections['count'] == 0:
             return detections
         
-        # Calculate scale factors
-        scale_x = original_size[1] / model_size[1]
-        scale_y = original_size[0] / model_size[0]
-        
-        # Rescale boxes
-        boxes = detections['boxes'].clone()
-        boxes[:, [0, 2]] *= scale_x  # x coordinates
-        boxes[:, [1, 3]] *= scale_y  # y coordinates
+        boxes = detections['boxes'].clone() # Normalized [0,1] xyxy
+        pad_left, pad_top = padding
+        original_height, original_width = original_size
+
+        boxes *= self.input_size[0]
+        boxes[:, [0, 2]] -= pad_left
+        boxes[:, [1, 3]] -= pad_top
+        boxes /= scale_factor
+        boxes[:, [0, 2]] = torch.clamp(boxes[:, [0, 2]], 0, original_width)
+        boxes[:, [1, 3]] = torch.clamp(boxes[:, [1, 3]], 0, original_height)
         
         detections['boxes'] = boxes
         
@@ -269,7 +203,7 @@ class YoloOnePostProcessor:
         Format detections into structured output
         
         Args:
-            detections: Detection tensor [N, 6]
+            detections: Detection tensor [N, 5] (x1, y1, x2, y2, score)
             
         Returns:
             Formatted detection dictionary
@@ -278,45 +212,11 @@ class YoloOnePostProcessor:
             return {
                 'boxes': torch.empty(0, 4),
                 'scores': torch.empty(0),
-                'class_probs': torch.empty(0),
                 'count': 0
             }
         
         return {
             'boxes': detections[:, :4],          # [N, 4] (x1, y1, x2, y2)
             'scores': detections[:, 4],          # [N] confidence scores
-            'class_probs': detections[:, 5],     # [N] class probabilities
             'count': detections.shape[0]         # Number of detections
         }
-
-# Convenience function
-def postprocess_yolo_one_outputs(
-    predictions: List[torch.Tensor],
-    conf_threshold: float = 0.25,
-    iou_threshold: float = 0.45,
-    max_detections: int = 300,
-    input_size: Tuple[int, int] = (640, 640),
-    original_shapes: Optional[List[Tuple[int, int]]] = None
-) -> List[Dict]:
-    """
-    Convenience function for post-processing YOLO-One outputs
-    
-    Args:
-        predictions: List of prediction tensors [P3, P4, P5]
-        conf_threshold: Confidence threshold
-        iou_threshold: IoU threshold for NMS
-        max_detections: Maximum detections to keep
-        input_size: Model input size
-        original_shapes: Original image shapes for rescaling
-        
-    Returns:
-        List of detection dictionaries
-    """
-    processor = YoloOnePostProcessor(
-        conf_threshold=conf_threshold,
-        iou_threshold=iou_threshold,
-        max_detections=max_detections,
-        input_size=input_size
-    )
-    
-    return processor.process_batch(predictions, original_shapes)

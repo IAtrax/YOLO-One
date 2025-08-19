@@ -120,3 +120,48 @@ def save_checkpoint(checkpoint: dict, filepath: str):
 def load_checkpoint(filepath: str, device: str = 'cpu') -> dict:
     """Load checkpoint from file"""
     return torch.load(filepath, map_location=device)
+
+def calculate_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate IoU between boxes
+        
+        Args:
+            boxes1: First set of boxes [N, 4]
+            boxes2: Second set of boxes [M, 4]
+            
+        Returns:
+            IoU matrix [N, M]
+        """
+        # Calculate intersection
+        inter_x1 = torch.max(boxes1[:, None, 0], boxes2[:, 0])
+        inter_y1 = torch.max(boxes1[:, None, 1], boxes2[:, 1])
+        inter_x2 = torch.min(boxes1[:, None, 2], boxes2[:, 2])
+        inter_y2 = torch.min(boxes1[:, None, 3], boxes2[:, 3])
+        
+        inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * \
+                    torch.clamp(inter_y2 - inter_y1, min=0)
+        
+        # Calculate areas
+        area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
+        area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+        
+        # Calculate union
+        union_area = area1[:, None] + area2 - inter_area
+        
+        # Calculate IoU
+        iou = inter_area / torch.clamp(union_area, min=1e-6)
+        
+        return iou
+
+def box_cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
+    """
+    Convert boxes from (center_x, center_y, width, height) to (x1, y1, x2, y2) format.
+    
+    Args:
+        boxes (torch.Tensor): Boxes in [N, 4] (cx, cy, w, h) format.
+    Returns:
+        torch.Tensor: Boxes in [N, 4] (x1, y1, x2, y2) format.
+    """
+    cx, cy, w, h = boxes.unbind(-1)
+    b = [(cx - w / 2), (cy - h / 2), (cx + w / 2), (cy + h / 2)]
+    return torch.stack(b, dim=-1)
