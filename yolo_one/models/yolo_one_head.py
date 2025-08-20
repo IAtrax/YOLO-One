@@ -7,8 +7,6 @@ YOLO-One Detection Head
 Mono-class, 5-channel head (obj, x, y, w, h) with decoupled towers and optional feature refinement.
 """
 
-from __future__ import annotations
-
 import math
 from typing import Any, Dict, List, Optional, Sequence, Union
 
@@ -16,7 +14,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Reusable Conv block from the repo (Conv-BN-Act, mobile-friendly)
 from yolo_one.models.common import Conv
 
 
@@ -158,7 +155,7 @@ class YoloOneDetectionHead(nn.Module):
         self,
         x: List[torch.Tensor],
         decode: bool = False,
-        img_size: Optional[Sequence[int]] = None,
+        img_size: Sequence[int] = None,
     ) -> Dict[str, List[torch.Tensor]]:
         if not isinstance(x, (list, tuple)) or len(x) != len(self.in_channels):
             raise ValueError("Expected a list [P3, P4, P5] matching configured in_channels")

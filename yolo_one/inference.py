@@ -11,13 +11,13 @@ import torch
 import torch.nn as nn
 import cv2
 import numpy as np
-from typing import List, Dict, Tuple, Optional, Union
+from typing import List, Dict, Tuple, Union
 import time
-from pathlib import Path
 import logging
 import rerun as rr
 # Import your YOLO-One model
 from yolo_one.models.yolo_one_model import YoloOne
+from yolo_one.data.postprocessing import YoloOnePostProcessor
 
 class YoloOneInference:
     """
@@ -57,6 +57,13 @@ class YoloOneInference:
         self.input_size = input_size
         self.half_precision = half_precision and device == 'cuda'
         
+        # Centralized post-processor
+        self.post_processor = YoloOnePostProcessor(
+            conf_threshold=self.confidence_threshold,
+            iou_threshold=self.nms_threshold,
+            max_detections=self.max_detections,
+            input_size=(self.input_size, self.input_size)
+        )
         # Load YOLO-One model
         self.model = self._load_yolo_one_model(model_path)
         
@@ -114,7 +121,7 @@ class YoloOneInference:
     
     def predict_image(
         self, 
-        image: Union[str, np.ndarray], 
+        image: np.ndarray, 
         return_crops: bool = False,
         visualize: bool = False
     ) -> Dict:
@@ -122,21 +129,14 @@ class YoloOneInference:
         Predict on single image with YOLO-One
         
         Args:
-            image: Image path or numpy array (BGR format)
+            image: Image numpy array (BGR format)
             return_crops: Return cropped detections
             visualize: Return visualization image
             
         Returns:
             Dictionary with detections and metadata
         """
-        
-        # Load image
-        if isinstance(image, str):
-            original_image = cv2.imread(image)
-            if original_image is None:
-                raise ValueError(f"Could not load image: {image}")
-        else:
-            original_image = image.copy()
+        original_image = image.copy()
         
         # Preprocessing
         start_time = time.time()
@@ -152,11 +152,18 @@ class YoloOneInference:
         
         # Postprocessing
         start_time = time.time()
-        # Use the new simplified post-processor on the 'decoded' outputs
-        detections = self._postprocess_decoded_predictions(
-            predictions, scale_factor, padding, original_image.shape[:2]
+        
+        # Delegate post-processing to the centralized processor
+        results_list = self.post_processor.process_batch(
+            predictions=predictions['decoded'],
+            original_shapes=[original_image.shape[:2]],
+            scale_factors=[scale_factor],
+            paddings=[padding]
         )
+        processed_detections = results_list[0]
         postprocessing_time = time.time() - start_time
+        
+        detections = self._format_output_detections(processed_detections)
         
         # Store timing
         self.preprocessing_times.append(preprocessing_time)
@@ -185,14 +192,14 @@ class YoloOneInference:
     
     def predict_batch(
         self, 
-        images: List[Union[str, np.ndarray]], 
+        images: List[np.ndarray], 
         batch_size: int = 8
     ) -> List[Dict]:
         """
         Batch prediction with YOLO-One
         
         Args:
-            images: List of image paths or numpy arrays
+            images: List of image numpy arrays
             batch_size: Processing batch size
             
         Returns:
@@ -212,7 +219,7 @@ class YoloOneInference:
         
         return results
     
-    def _predict_batch_internal(self, batch: List[Union[str, np.ndarray]]) -> List[Dict]:
+    def _predict_batch_internal(self, batch: List[np.ndarray]) -> List[Dict]:
         """Internal batch prediction for YOLO-One"""
         
         # Preprocess batch
@@ -222,14 +229,7 @@ class YoloOneInference:
         paddings = []
         
         for image in batch:
-            # Load image
-            if isinstance(image, str):
-                orig_img = cv2.imread(image)
-                if orig_img is None:
-                    continue
-            else:
-                orig_img = image.copy()
-            
+            orig_img = image.copy()
             # Preprocess
             prep_tensor, scale_factor, padding = self._preprocess_image(orig_img)
             
@@ -253,15 +253,19 @@ class YoloOneInference:
         # Process each image in batch
         results = []
         for i, (orig_img, scale_factor, padding) in enumerate(
-            zip(original_images, scale_factors, paddings)
+            zip(original_images, scale_factors, paddings) # This was missing paddings
         ):
             # Extract predictions for current image
-            img_predictions = self._extract_single_prediction(batch_predictions, i)
+            img_predictions = {key: [p[i:i+1] for p in pred_list] for key, pred_list in batch_predictions.items()}
             
             # Postprocess
-            detections = self._postprocess_decoded_predictions(
-                img_predictions, scale_factor, padding, orig_img.shape[:2]
+            processed_detections_list = self.post_processor.process_batch(
+                predictions=img_predictions['decoded'],
+                original_shapes=[orig_img.shape[:2]],
+                scale_factors=[scale_factor],
+                paddings=[padding]
             )
+            detections = self._format_output_detections(processed_detections_list[0])
             
             results.append({
                 'detections': detections,
@@ -273,15 +277,9 @@ class YoloOneInference:
         return results
     
     def _extract_single_prediction(self, batch_predictions: Dict, batch_idx: int) -> Dict:
-        """Extract predictions for single image from batch"""
-        
-        single_predictions = {}
-        
-        for key, pred_list in batch_predictions.items():
-            single_predictions[key] = [pred[batch_idx:batch_idx+1] for pred in pred_list]
-        
-        return single_predictions
-    
+        """No longer needed, post-processor handles batch logic."""
+        pass
+
     def _preprocess_image(self, image: np.ndarray) -> Tuple[torch.Tensor, float, Tuple[int, int]]:
         """
         Preprocess image for YOLO-One inference
@@ -333,158 +331,14 @@ class YoloOneInference:
         
         return tensor, scale_factor, (pad_left, pad_top)
     
-    def _postprocess_decoded_predictions(
-        self, 
-        predictions: Dict[str, List[torch.Tensor]],
-        scale_factor: float, 
-        padding: Tuple[int, int],
-        original_shape: Tuple[int, int]
-    ) -> Dict:
-        """
-        Postprocess the already decoded predictions from the model head.
-        This function handles filtering, NMS, and rescaling.
-        
-        Args:
-            predictions: Dictionary from the model, must contain the 'decoded' key.
-            scale_factor: Image scale factor
-            padding: Applied padding (left, top)
-            original_shape: Original image shape (height, width)
-            
-        Returns:
-            Dictionary with final processed detections.
-        """
-        # The 'decoded' key contains a list of tensors [B, 5, Hk, Wk]
-        # where 5 is (x_c, y_c, w, h, conf), all normalized to image size.
-        decoded_preds = predictions['decoded']
-
-        # Concatenate predictions from all levels
-        # [B, 5, H, W] -> [B, H, W, 5] -> [B, N, 5]
-        all_preds = [p.permute(0, 2, 3, 1).reshape(p.shape[0], -1, 5) for p in decoded_preds]
-        preds = torch.cat(all_preds, dim=1).squeeze(0)  # [N, 5] for a single image
-
-        # Filter by confidence
-        conf_mask = preds[:, 4] >= self.confidence_threshold
-        preds = preds[conf_mask]
-
-        if preds.shape[0] == 0:
-            return {'boxes': np.empty((0, 4)), 'scores': np.empty(0), 'num_detections': 0}
-
-        # Convert from (center_x, center_y, width, height) to (x1, y1, x2, y2)
-        box_cxcywh = preds[:, :4]
-        boxes_xyxy = torch.empty_like(box_cxcywh)
-        boxes_xyxy[:, 0] = box_cxcywh[:, 0] - box_cxcywh[:, 2] / 2
-        boxes_xyxy[:, 1] = box_cxcywh[:, 1] - box_cxcywh[:, 3] / 2
-        boxes_xyxy[:, 2] = box_cxcywh[:, 0] + box_cxcywh[:, 2] / 2
-        boxes_xyxy[:, 3] = box_cxcywh[:, 1] + box_cxcywh[:, 3] / 2
-        scores = preds[:, 4]
-
-        # Apply NMS
-        keep_indices = self._apply_nms(boxes_xyxy, scores)
-        final_boxes = boxes_xyxy[keep_indices]
-        final_scores = scores[keep_indices]
-
-        # Limit max detections
-        if len(final_boxes) > self.max_detections:
-            final_boxes = final_boxes[:self.max_detections]
-            final_scores = final_scores[:self.max_detections]
-
-        # Rescale boxes to original image coordinates
-        if len(final_boxes) > 0:
-            final_boxes = self._rescale_boxes(final_boxes, scale_factor, padding, original_shape)
-
-        result = {
-            'boxes': final_boxes.cpu().numpy(),
-            'scores': final_scores.cpu().numpy(),
-            'num_detections': len(final_boxes)
+    def _format_output_detections(self, processed_detections: Dict) -> Dict:
+        """Converts post-processor output (tensors) to numpy for the final API result."""
+        return {
+            'boxes': processed_detections['boxes'].cpu().numpy(),
+            'scores': processed_detections['scores'].cpu().numpy(),
+            'num_detections': processed_detections['count']
         }
-        return result
-    
-    def _apply_nms(self, boxes: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
-        """Apply Non-Maximum Suppression"""
-        
-        if len(boxes) == 0:
-            return torch.empty(0, dtype=torch.long, device=self.device)
-        
-        # Use torchvision NMS if available
-        try:
-            from torchvision.ops import nms
-            return nms(boxes, scores, self.nms_threshold)
-        except ImportError:
-            # Fallback to custom NMS
-            return self._custom_nms(boxes, scores)
-    
-    def _custom_nms(self, boxes: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
-        """Custom NMS implementation"""
-        
-        sorted_indices = torch.argsort(scores, descending=True)
-        
-        keep = []
-        while len(sorted_indices) > 0:
-            current = sorted_indices[0]
-            keep.append(current)
-            
-            if len(sorted_indices) == 1:
-                break
-            
-            current_box = boxes[current:current+1]
-            remaining_boxes = boxes[sorted_indices[1:]]
-            
-            iou = self._compute_iou(current_box, remaining_boxes).squeeze(0)
-            mask = iou <= self.nms_threshold
-            sorted_indices = sorted_indices[1:][mask]
-        
-        return torch.tensor(keep, dtype=torch.long, device=self.device)
-    
-    def _compute_iou(self, boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
-        """Compute IoU between boxes"""
-        
-        boxes1 = boxes1.unsqueeze(1)
-        boxes2 = boxes2.unsqueeze(0)
-        
-        inter_x1 = torch.max(boxes1[..., 0], boxes2[..., 0])
-        inter_y1 = torch.max(boxes1[..., 1], boxes2[..., 1])
-        inter_x2 = torch.min(boxes1[..., 2], boxes2[..., 2])
-        inter_y2 = torch.min(boxes1[..., 3], boxes2[..., 3])
-        
-        inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
-        
-        area1 = (boxes1[..., 2] - boxes1[..., 0]) * (boxes1[..., 3] - boxes1[..., 1])
-        area2 = (boxes2[..., 2] - boxes2[..., 0]) * (boxes2[..., 3] - boxes2[..., 1])
-        union_area = area1 + area2 - inter_area
-        
-        return inter_area / torch.clamp(union_area, min=1e-6)
-    
-    def _rescale_boxes(
-        self, 
-        boxes: torch.Tensor, 
-        scale_factor: float, 
-        padding: Tuple[int, int], 
-        original_shape: Tuple[int, int]
-    ) -> torch.Tensor:
-        """Rescale boxes to original image coordinates"""
-        
-        if len(boxes) == 0:
-            return boxes
-        
-        pad_left, pad_top = padding
-        original_height, original_width = original_shape
-        
-        # Convert from normalized to input image coordinates
-        boxes = boxes * self.input_size
-        
-        # Remove padding
-        boxes[:, [0, 2]] -= pad_left
-        boxes[:, [1, 3]] -= pad_top
-        
-        # Scale back to original image
-        boxes = boxes / scale_factor
-        
-        # Clamp to image boundaries
-        boxes[:, [0, 2]] = torch.clamp(boxes[:, [0, 2]], 0, original_width)
-        boxes[:, [1, 3]] = torch.clamp(boxes[:, [1, 3]], 0, original_height)
-        
-        return boxes
-    
+
     def _extract_crops(self, image: np.ndarray, detections: Dict) -> List[np.ndarray]:
         """Extract cropped regions from detections"""
         
@@ -686,24 +540,44 @@ if __name__ == "__main__":
 if __name__ == "__main__":
 
     rr.init("yolo-one-inference", spawn=True)
+
+    import argparse
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description="YOLO-One Inference Example")
+    parser.add_argument('--weights', type=str, required=True, help='Path to model weights file.')
+    parser.add_argument('--source', type=str, required=True, help='Path to input image.')
+    parser.add_argument('--output', type=str, default='output_inference.jpg', help='Path to save output image.')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use (e.g., cuda, cpu).')
+    parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold.')
+    parser.add_argument('--iou', type=float, default=0.45, help='IoU threshold for NMS.')
+    args = parser.parse_args()
+
     
     # Initialize YOLO-One inference engine
     inference_engine = create_yolo_one_inference(
-        model_path="/home/ibra/Documents/iatrax/YOLO-One/runs/train_20250615_210453/final_model.pt",
-        device="cuda",
-        confidence_threshold=0.25,
-        nms_threshold=0.45
+        model_path=args.weights,
+        device=args.device,
+        confidence_threshold=args.conf,
+        nms_threshold=args.iou
     )
+    
+    # Load the image before passing it to the engine
+    image_path = Path(args.source)
+    if not image_path.exists():
+        raise FileNotFoundError(f"Image not found at {args.source}")
+    image_bgr = cv2.imread(str(image_path))
     
     # Single image prediction
     results = inference_engine.predict_image(
-        "/home/ibra/Documents/iatrax/YOLO-One/datasets/images/test/The-Curve-Atrium_mp4-8_jpg.rf.d21b38d61f9f727604859cd2274761e2.jpg", 
+        image_bgr, 
         return_crops=True,
         visualize=True
     )
     
     print(f"Detected {results['num_detections']} objects")
     print(f"Inference time: {results['inference_time']*1000:.2f}ms")
+
     img_save = results['visualization']
     cv2.imwrite('output.jpg', img_save)
 
@@ -713,8 +587,19 @@ if __name__ == "__main__":
     # Batch prediction
     #image_list = ["img1.jpg", "img2.jpg", "img3.jpg"]
     #batch_results = inference_engine.predict_batch(image_list, batch_size=4)
+
     
+    if results['visualization'] is not None:
+        cv2.imwrite(args.output, results['visualization'])
+        print(f"Visualization saved to {args.output}")
+
     # Performance statistics
     stats = inference_engine.get_performance_stats()
+
     print(f"Average FPS: {stats['fps']:.1f}")
     print(f"Average total time: {stats['avg_total_time_ms']:.2f}ms")"""
+
+    if stats:
+        print(f"Average FPS: {stats['fps']:.1f}")
+        print(f"Average total time: {stats['avg_total_time_ms']:.2f}ms")
+
