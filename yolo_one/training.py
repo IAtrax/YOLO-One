@@ -156,7 +156,7 @@ class YoloOneTrainer:
             obj_weight=loss_config.get('obj_weight', 1.0),
             focal_alpha=loss_config.get('focal_alpha', 0.25),
             focal_gamma=loss_config.get('focal_gamma', 1.5),
-            iou_type=loss_config.get('iou_type', 'meiou'),
+            iou_type=loss_config.get('iou_type', 'siou'),
             label_smoothing=loss_config.get('label_smoothing', 0.0),
             p5_weight_boost=loss_config.get('p5_weight_boost', 1.2)
         )

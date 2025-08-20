@@ -25,7 +25,7 @@ class YoloOneLoss(nn.Module):
         shape_conf_weight: float = 0.2,
         focal_alpha: float = 0.25,
         focal_gamma: float = 1.5,
-        iou_type: str = 'meiou',
+        iou_type: str = 'siou',
         label_smoothing: float = 0.0,
         p5_weight_boost: float = 1.2,
         theta: int = 4,
@@ -370,11 +370,11 @@ class YoloOneLoss(nn.Module):
         ciou = iou - rho2 / torch.clamp(enclose_c2, min=1e-6) - alpha * v
 
         if self.focal_loss:
-            Loss = (iou**self.focal_gamma)*(1 - ciou)
+            ciou_loss = (iou**self.focal_gamma)*(1 - ciou)
         else:
-            Loss = 1 - ciou
+            ciou_loss = 1 - ciou
         
-        return Loss
+        return ciou_loss
     
     def _eiou_loss(
                     self,
@@ -414,11 +414,11 @@ class YoloOneLoss(nn.Module):
         eiou = iou - rho2 / (c2+ 1e-6) - rho2_w / (wc2 + 1e-6) - rho2_h / (hc2 + 1e-6)
         
         if self.focal_loss:
-            Loss = (iou**self.focal_gamma)*(1 - eiou)
+            eiou_loss = (iou**self.focal_gamma)*(1 - eiou)
         else:
-            Loss = 1 - eiou
+            eiou_loss = 1 - eiou
 
-        return Loss
+        return eiou_loss
     
 
     def _meiou_loss(
@@ -477,11 +477,11 @@ class YoloOneLoss(nn.Module):
         meiou = iou - rho2_center / c2 - v_absolute - delta_angle
 
         if self.focal_loss:
-            Loss = (iou**self.focal_gamma)*(1 - meiou)
+            meiou_loss = (iou**self.focal_gamma)*(1 - meiou)
         else:
-            Loss = 1 - meiou
+            meiou_loss = 1 - meiou
         
-        return Loss
+        return meiou_loss
 
     
 
@@ -511,13 +511,6 @@ class YoloOneLoss(nn.Module):
         iou = inter_area / (union_area + 1e-6)
 
         # Angle Cost
-
-        # ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
-        # ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
-        # ew, eh = ex2 - ex1, ey2 - ey1  # enclosing box dims
-
-        # pw, ph = px2 - px1, py2 - py1
-        # tw, th = tx2 - tx1, ty2 - ty1
 
         pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
         tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
@@ -555,10 +548,10 @@ class YoloOneLoss(nn.Module):
         siou = iou - (distance_cost + shape_cost) / 2
 
         if self.focal_loss:
-            Loss = (iou**self.focal_gamma)*(1 - siou)
+            siou_loss = (iou**self.focal_gamma)*(1 - siou)
         else:
-            Loss = 1 - siou
-        return Loss
+            siou_loss = 1 - siou
+        return siou_loss
 
 
     def _xywh_to_xyxy(self, boxes: torch.Tensor) -> Tuple[torch.Tensor, ...]:
@@ -578,7 +571,7 @@ def create_yolo_one_loss(
     shape_conf_weight: float = 0.2,
     focal_alpha: float = 0.25,
     focal_gamma: float = 1.5,
-    iou_type: str = 'meiou',
+    iou_type: str = 'siou',
     label_smoothing: float = 0.0,
     p5_weight_boost: float = 1.2,
     theta: int = 4,
@@ -594,12 +587,7 @@ def create_yolo_one_loss(
         focal_gamma=focal_gamma,
         iou_type=iou_type,
         label_smoothing=label_smoothing,
-<<<<<<< HEAD
         p5_weight_boost=p5_weight_boost,
         theta = theta,
         focal_loss=focal_loss
     )
-=======
-        p5_weight_boost=p5_weight_boost
-    )
->>>>>>> 9c24f5a62b2e62de27cee5aac94701ed4c47af96
