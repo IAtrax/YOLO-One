@@ -1,4 +1,3 @@
-
 """
 IAtrax Team - 2025 - https://iatrax.com
 
@@ -20,7 +19,7 @@ from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 import argparse
 import warnings
-from tqdm.auto import tqdm  # Auto-detects notebook environment for clean progress bars
+from tqdm.auto import tqdm 
 
 warnings.filterwarnings('ignore')
 
@@ -28,7 +27,7 @@ warnings.filterwarnings('ignore')
 from yolo_one.models.yolo_one_model import YoloOne
 from yolo_one.losses import create_yolo_one_loss
 from yolo_one.metrics import YoloOneMetrics
-from yolo_one.optimizer import create_yolo_one_optimizer, YoloOneOptimizer
+from yolo_one.optimizer import create_yolo_one_optimizer
 from yolo_one.configs.config import create_yolo_one_config, YoloOneConfig
 from yolo_one.data.preprocessing import create_yolo_one_dataset, YoloOneDatasetAnalyzer
 from yolo_one.utils.general import EMAModel
@@ -159,7 +158,7 @@ class YoloOneTrainer:
             label_smoothing=loss_config.get('label_smoothing', 0.0),
             obj_neg_weight=loss_config.get('obj_neg_weight', 0.05),
             p5_weight_boost=loss_config.get('p5_weight_boost', 1.2),
-            moe_balance_weight=loss_config.get('moe_balance_weight', 0.05)
+            moe_balance_weight=loss_config.get('moe_balance_weight', 0.001)
         )
         
         return criterion.to(self.device)
@@ -214,7 +213,6 @@ class YoloOneTrainer:
         
         start_time = time.time()
         
-        # Manually control the outer tqdm progress bar
         pbar_outer = tqdm(total=total_epochs, initial=self.current_epoch, desc="Total Progress")
         
         for epoch in range(self.current_epoch, total_epochs):
@@ -246,19 +244,12 @@ class YoloOneTrainer:
             # Log training metrics
             self._log_metrics(train_metrics, epoch, phase='train')
             
-            # Update learning rate
-            if self.scheduler:
-                # Use a specific scheduler if defined, otherwise just step
-                if isinstance(self.scheduler, torch.optim.lr_scheduler.OneCycleLR):
-                    # OneCycleLR is stepped per batch, but we can call step once per epoch
-                    # The original code's logic here was a bit unclear. We will step per batch
-                    # but keep this for other schedulers that step per epoch.
-                    pass # We now step the scheduler per batch
-                else:
-                    self.scheduler.step()
+            # Update learning rate (OneCycleLR is stepped per batch in _train_epoch)
+            if self.scheduler and not isinstance(self.scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                self.scheduler.step()
             
             # Save regular checkpoint (full state for resumption)
-            if (epoch + 1) % 50 == 0:
+            if (epoch + 1) % 5 == 0:
                 self._save_checkpoint(is_best=False, only_model_state=False)
             
             # Early stopping check
@@ -299,9 +290,8 @@ class YoloOneTrainer:
         accumulate_batches = self.config['training'].get('accumulate_batches', 1)
         
         epoch_start_time = time.time()
+        step_count = 0  # Compteur des vraies steps
         
-        # Iterate over batches with tqdm for detailed progress
-        # `leave=False` ensures the inner bar disappears when done
         pbar = tqdm(self.train_dataloader, desc=f"Epoch {self.current_epoch + 1}/{total_epochs} (Training)", leave=False)
         for batch_idx, batch in enumerate(pbar):
             
@@ -343,9 +333,13 @@ class YoloOneTrainer:
                 if self.ema_model:
                     self.ema_model.update(self.model)
                 
+                # Update Step OneCycleLR per optimization step
+                if self.scheduler and isinstance(self.scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                    self.scheduler.step()
+                
                 self.global_step += 1
+                step_count += 1
             
-            # Update running losses
             running_loss += loss_dict['total_loss'].item()
             running_box_loss += loss_dict['box_loss'].item()
             running_obj_loss += loss_dict['obj_loss'].item()
@@ -358,10 +352,10 @@ class YoloOneTrainer:
                 loss=loss_dict['total_loss'].item(),
                 box_loss=loss_dict['box_loss'].item(),
                 obj_loss=loss_dict['obj_loss'].item(),
-                moe_loss=loss_dict.get('moe_balance_loss', torch.tensor(0.0)).item()
+                moe_loss=loss_dict.get('moe_balance_loss', torch.tensor(0.0)).item(),
+                lr=f"{current_lr:.2e}"
             )
             
-        # Calculate epoch metrics
         epoch_time = time.time() - epoch_start_time
         avg_loss = running_loss / num_batches
         avg_box_loss = running_box_loss / num_batches
@@ -374,7 +368,8 @@ class YoloOneTrainer:
             'obj_loss': avg_obj_loss,
             'moe_balance_loss': avg_moe_loss,
             'epoch_time': epoch_time,
-            'batches_per_second': num_batches / epoch_time
+            'batches_per_second': num_batches / epoch_time,
+            'optimization_steps': step_count
         }
     
     def _validate_epoch(self, total_epochs: int) -> Dict[str, float]:
@@ -409,7 +404,6 @@ class YoloOneTrainer:
                 inference_time = time.time() - inference_start
                 
                 # Predictions and targets are already on the correct device.
-                # Passer les prédictions décodées au calculateur de métriques.
                 decoded_preds_gpu = predictions['decoded']
 
                 # Update metrics
@@ -449,7 +443,8 @@ class YoloOneTrainer:
                 f"Loss: {metrics.get('total_loss', 0):.4f} - "
                 f"Box Loss: {metrics.get('box_loss', 0):.4f} - "
                 f"Obj Loss: {metrics.get('obj_loss', 0):.4f} - "
-                f"MoE Loss: {metrics.get('moe_balance_loss', 0):.4f}"
+                f"MoE Loss: {metrics.get('moe_balance_loss', 0):.4f} - "
+                f"Steps: {metrics.get('optimization_steps', 0)}"
             )
 
     def _save_checkpoint(self, is_best: bool = False, filename: Optional[str] = None, only_model_state: bool = False):
@@ -470,12 +465,9 @@ class YoloOneTrainer:
         if only_model_state:
             # For final or best model, save only model's state_dict (or EMA's)
             model_to_save = self.ema_model.ema if self.ema_model else self.model
-            # Ensure model is on CPU before saving if it's for general deployment
-            # Otherwise, keep on GPU if it's for GPU-only inference
             torch.save(model_to_save.state_dict(), self.run_dir / filename)
             self.logger.info(f"Saved lightweight model state : {self.run_dir / filename}")
         else:
-            # For regular checkpoints, save full state for resuming training
             checkpoint = {
                 'epoch': self.current_epoch + 1,
                 'global_step': self.global_step,

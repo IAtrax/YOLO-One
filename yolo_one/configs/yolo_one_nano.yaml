@@ -6,48 +6,47 @@ model:
   depth_multiple: 0.33
   use_moe: true
 
-
 training:
-  epochs: 10
-  batch_size: 1
-  accumulate_batches: 1
+  epochs: 100
+  batch_size: 8
+  accumulate_batches: 8
   mixed_precision: true
   compile_model: true
   use_ema: true
-  ema_decay: 0.9999
-
+  ema_decay: 0.999
 loss:
   box_weight: 7.5
   obj_weight: 1.0
   focal_alpha: 0.25
   focal_gamma: 1.5
-  iou_type: ciou
+  iou_type: meiou
   label_smoothing: 0.0
   p5_weight_boost: 1.2
+  moe_balance_weight: 0.001
 
 optimizer:
   optimizer:
     optimizer_type: adamw
-    learning_rate: 0.001
+    learning_rate: 0.00001
     weight_decay: 0.0005
     betas: [0.9, 0.999]
     eps: 1.0e-08
   scheduler:
     scheduler_type: cosine
-    total_epochs: 300
+    total_epochs: 100
     warmup_epochs: 5
     min_lr_ratio: 0.01
 
 augmentation:
-  mosaic: 0.5
-  mixup: 0.1
-  copy_paste: 0.1
+  mosaic: 0.3
+  mixup: 0.05
+  copy_paste: 0.05
   hsv_h: 0.015
   hsv_s: 0.7
   hsv_v: 0.4
   degrees: 0.0
   translate: 0.1
-  scale: 0.5
+  scale: 0.3
   shear: 0.0
   perspective: 0.0
   flipud: 0.0
@@ -60,7 +59,7 @@ metrics:
   max_detections: 300
 
 validation:
-  val_interval: 10
+  val_interval: 5
   save_best: true
   patience: 50
   min_delta: 0.001

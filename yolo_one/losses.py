@@ -25,7 +25,7 @@ class YoloOneLoss(nn.Module):
         aspect_weight: float = 0.5,
         shape_conf_weight: float = 0.2,
         focal_alpha: float = 0.25,
-        moe_balance_weight: float = 0.05,
+        moe_balance_weight: float = 0.001,
         focal_gamma: float = 1.5,
         obj_neg_weight: float = 0.05,
         iou_type: str = 'meiou',
@@ -486,8 +486,13 @@ class YoloOneLoss(nn.Module):
         #alpha = v_co / ((1 - iou) + v_co + 1e-6)
 
         meiou = iou - rho2_center / c2 - v_absolute - delta_angle #- 0.2 * delta_angle
+        meiou = torch.clamp(meiou, min=-1.0, max=1.0)  # Force bounds
+        loss = (iou**self.focal_gamma) * (1 - meiou)
+        loss = torch.clamp(loss, min=0.0, max=10.0)    # Prevent explosion
+        # Final NaN check
+        loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
 
-        return (iou**self.focal_gamma)*(1 - meiou)
+        return loss
     
     
 
@@ -497,7 +502,7 @@ def create_yolo_one_loss(
     aspect_weight: float = 0.5,
     shape_conf_weight: float = 0.2,
     focal_alpha: float = 0.25,
-    moe_balance_weight: float = 0.05,
+    moe_balance_weight: float = 0.001,
     focal_gamma: float = 1.5,
     obj_neg_weight: float = 0.05,
     iou_type: str = 'meiou',
