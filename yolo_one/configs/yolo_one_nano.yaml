@@ -17,11 +17,15 @@ training:
 loss:
   box_weight: 7.5
   obj_weight: 1.0
+  aspect_weight: 0.5
+  shape_conf_weight: 0.2
   focal_alpha: 0.25
   focal_gamma: 1.5
-  iou_type: ciou
+  iou_type: meiou
   label_smoothing: 0.0
   p5_weight_boost: 1.2
+  theta: 4.0
+  focal_loss: true
 
 optimizer:
   optimizer:

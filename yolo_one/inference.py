@@ -14,7 +14,7 @@ import numpy as np
 from typing import List, Dict, Tuple, Union
 import time
 import logging
-
+import rerun as rr
 # Import your YOLO-One model
 from yolo_one.models.yolo_one_model import YoloOne
 from yolo_one.data.postprocessing import YoloOnePostProcessor
@@ -441,9 +441,106 @@ def create_yolo_one_inference(
         half_precision=half_precision
     )
 
+def log_to_rerun(image: np.ndarray, detections: Dict, stream_name: str = "inference"):
+    """
+    Logger image + bounding boxes dans rerun
+    Args:
+        image: np.ndarray (BGR)
+        detections: dict avec 'boxes' et 'scores'
+        stream_name: chemin rerun (ex: "inference/cam1")
+    """
+
+    # Convertir BGR -> RGB (Rerun attend RGB)
+    img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    rr.log(f"{stream_name}/image", rr.Image(img_rgb))
+
+    if detections["num_detections"] > 0:
+        boxes = detections["boxes"]
+        scores = detections["scores"]
+
+        # Convertir (x1, y1, x2, y2) -> (x, y, w, h)
+        boxes_xywh = []
+        labels = []
+        for i, box in enumerate(boxes):
+            x1, y1, x2, y2 = box.astype(int)
+            boxes_xywh.append([x1, y1, x2 - x1, y2 - y1])
+            labels.append(f"{scores[i]:.2f}")
+
+        # Logger les bounding boxes dans rerun
+        rr.log(
+            f"{stream_name}/detections",
+            rr.Boxes2D(
+                boxes_xywh,
+                array_id="image",  # associer aux images
+                labels=labels
+            )
+        )
+
+
+if __name__ == "__main__":
+    # Initialiser rerun
+    
+    rr.init("YOLO-One Inference", spawn=True)
+
+    # Initialiser YOLO-One inference engine
+    inference_engine = create_yolo_one_inference(
+        model_path="/YOLO-One/runs/train_20250818_192510/final_model.pt",
+        device="cuda",
+        confidence_threshold=0.25,
+        nms_threshold=0.45
+    )
+
+    # ----------- MODE IMAGE UNIQUE ------------
+    image_path = "/YOLO-One/datasets/images/test/The-Curve-Atrium_mp4-8_jpg.rf.d21b38d61f9f727604859cd2274761e2.jpg"
+    results = inference_engine.predict_image(image_path, return_crops=True, visualize=False)
+
+    print(f"Detected {results['num_detections']} objects")
+    print(f"Inference time: {results['inference_time']*1000:.2f}ms")
+
+    img_save = results['visualization']
+    cv2.imwrite('output.jpg', img_save)
+
+    # Logger l’image et les prédictions dans rerun
+    original_img = cv2.imread(image_path)
+    log_to_rerun(original_img, results["detections"], stream_name="image_test")
+
+    # Décommente pour activer la webcam ou une vidéo
+    """
+    cap = cv2.VideoCapture(0)  # mettre chemin vidéo à la place de 0
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Prédiction YOLO-One
+        results = inference_engine.predict_image(frame, visualize=False)
+
+        # Logger dans rerun
+        log_to_rerun(frame, results["detections"], stream_name="video_stream")
+
+        # (optionnel) affichage local OpenCV
+        vis = inference_engine._visualize_detections(frame, results["detections"])
+        cv2.imshow("YOLO-One", vis)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    """
+
+    # ----------- STATISTIQUES PERF ------------
+    stats = inference_engine.get_performance_stats()
+    print(f"Average FPS: {stats['fps']:.1f}")
+    print(f"Average total time: {stats['avg_total_time_ms']:.2f}ms")
+
+"""
 
 # Example usage
 if __name__ == "__main__":
+
+    rr.init("yolo-one-inference", spawn=True)
+
     import argparse
     from pathlib import Path
 
@@ -455,6 +552,7 @@ if __name__ == "__main__":
     parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold.')
     parser.add_argument('--iou', type=float, default=0.45, help='IoU threshold for NMS.')
     args = parser.parse_args()
+
     
     # Initialize YOLO-One inference engine
     inference_engine = create_yolo_one_inference(
@@ -479,6 +577,17 @@ if __name__ == "__main__":
     
     print(f"Detected {results['num_detections']} objects")
     print(f"Inference time: {results['inference_time']*1000:.2f}ms")
+
+    img_save = results['visualization']
+    cv2.imwrite('output.jpg', img_save)
+
+    img = cv2.cvtColor(results["visualization"], cv2.COLOR_BGR2RGB)  # rerun attend du RGB
+    rr.log("image", rr.Image(img))
+    
+    # Batch prediction
+    #image_list = ["img1.jpg", "img2.jpg", "img3.jpg"]
+    #batch_results = inference_engine.predict_batch(image_list, batch_size=4)
+
     
     if results['visualization'] is not None:
         cv2.imwrite(args.output, results['visualization'])
@@ -486,6 +595,11 @@ if __name__ == "__main__":
 
     # Performance statistics
     stats = inference_engine.get_performance_stats()
+
+    print(f"Average FPS: {stats['fps']:.1f}")
+    print(f"Average total time: {stats['avg_total_time_ms']:.2f}ms")"""
+
     if stats:
         print(f"Average FPS: {stats['fps']:.1f}")
         print(f"Average total time: {stats['avg_total_time_ms']:.2f}ms")
+

@@ -5,7 +5,6 @@ LICENSE: MIT
 
 YOLO-ONE LOSS MODULE - ANCHOR-FREE
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,7 +27,9 @@ class YoloOneLoss(nn.Module):
         focal_gamma: float = 1.5,
         iou_type: str = 'meiou',
         label_smoothing: float = 0.0,
-        p5_weight_boost: float = 1.2
+        p5_weight_boost: float = 1.2,
+        theta: int = 4,
+        focal_loss: bool= False
     ):
         super().__init__()
         
@@ -41,6 +42,8 @@ class YoloOneLoss(nn.Module):
         self.iou_type = iou_type
         self.label_smoothing = label_smoothing
         self.p5_weight_boost = p5_weight_boost
+        self.theta = theta
+        self.focal_loss = focal_loss
         
         self.bce_loss = nn.BCEWithLogitsLoss(reduction='none')
         self.mse_loss = nn.MSELoss(reduction='none')
@@ -63,13 +66,13 @@ class YoloOneLoss(nn.Module):
             Dictionary with loss components
         """
         
-        device = predictions['detections'][0].device
+        device = predictions['preds'][0].device
         
         # Initialize losses
         loss_box = torch.zeros(1, device=device)
         loss_obj = torch.zeros(1, device=device)
-        loss_aspect = torch.zeros(1, device=device)
-        loss_shape_conf = torch.zeros(1, device=device)
+        # loss_aspect = torch.zeros(1, device=device)
+        # loss_shape_conf = torch.zeros(1, device=device)
         
         # Scale information
         scales = [
@@ -81,9 +84,9 @@ class YoloOneLoss(nn.Module):
         # Process each scale
         for scale_idx, scale_info in enumerate(scales):
             
-            detections = predictions['detections'][scale_idx]
-            aspects = predictions['aspects'][scale_idx]
-            shape_confs = predictions['shape_confidences'][scale_idx]
+            detections = predictions['preds'][scale_idx]
+            # aspects = predictions['aspects'][scale_idx]
+            # shape_confs = predictions['shape_confidences'][scale_idx]
             
             batch_size, _, height, width = detections.shape
             
@@ -95,8 +98,8 @@ class YoloOneLoss(nn.Module):
             # Extract predictions
             pred_boxes = detections[:, :4]  # [B, 4, H, W]
             pred_conf = detections[:, 4]    # [B, H, W]
-            pred_aspects = aspects[:, 0]    # [B, H, W]
-            pred_shape_conf = shape_confs[:, 0]  # [B, H, W]
+            # pred_aspects = aspects[:, 0]    # [B, H, W]
+            # pred_shape_conf = shape_confs[:, 0]  # [B, H, W]
             
             # Extract targets
             target_boxes = scale_targets[:, :, :, :4]  # [B, H, W, 4]
@@ -128,28 +131,28 @@ class YoloOneLoss(nn.Module):
             loss_obj += obj_loss * self.obj_weight
             
             # Aspect ratio loss
-            if aspect_targets is not None and box_mask.sum() > 0:
-                aspect_loss = self._compute_aspect_loss(
-                    pred_aspects[box_mask], aspect_targets[box_mask]
-                )
-                loss_aspect += aspect_loss * self.aspect_weight
+            # if aspect_targets is not None and box_mask.sum() > 0:
+            #     aspect_loss = self._compute_aspect_loss(
+            #         pred_aspects[box_mask], aspect_targets[box_mask]
+            #     )
+            #     loss_aspect += aspect_loss * self.aspect_weight
             
-            # Shape confidence loss
-            shape_conf_targets = obj_mask.float()
-            shape_conf_loss = self._compute_shape_confidence_loss(
-                pred_shape_conf, shape_conf_targets
-            )
-            loss_shape_conf += shape_conf_loss * self.shape_conf_weight
+            # # Shape confidence loss
+            # shape_conf_targets = obj_mask.float()
+            # shape_conf_loss = self._compute_shape_confidence_loss(
+            #     pred_shape_conf, shape_conf_targets
+            # )
+            # loss_shape_conf += shape_conf_loss * self.shape_conf_weight
         
         # Total loss
-        total_loss = loss_box + loss_obj + loss_shape_conf #+ loss_aspect 
+        total_loss = loss_box + loss_obj #+ loss_shape_conf #+ loss_aspect 
         
         return {
             'total_loss': total_loss,
             'box_loss': loss_box,
             'obj_loss': loss_obj,
-            'aspect_loss': loss_aspect,
-            'shape_conf_loss': loss_shape_conf,
+            # 'aspect_loss': loss_aspect,
+            # 'shape_conf_loss': loss_shape_conf,
             'avg_loss': total_loss.item()
         }
     
@@ -242,11 +245,16 @@ class YoloOneLoss(nn.Module):
             target_boxes_abs = torch.cat([target_xy, target_wh], dim=-1)
             
             loss = self._eiou_loss(pred_boxes_abs, target_boxes_abs)
+        elif self.iou_type == 'siou':
+            pred_boxes_abs = torch.cat([pred_xy, torch.exp(pred_wh)], dim=-1)
+            target_boxes_abs = torch.cat([target_xy, target_wh], dim=-1)
+            
+            loss = self._siou_loss(pred_boxes_abs, target_boxes_abs)
         else:
             # MSE fallback
             loss = F.mse_loss(pred_xy, target_xy) + F.mse_loss(pred_wh, target_wh)
         
-        return loss.mean()
+        return loss
     
     def _compute_aspect_loss(
         self,
@@ -358,10 +366,16 @@ class YoloOneLoss(nn.Module):
         
         alpha = v / torch.clamp(1 - iou + v, min=1e-6)
         
-        # CIoU
+        # CIoU Loss
         ciou = iou - rho2 / torch.clamp(enclose_c2, min=1e-6) - alpha * v
+
+        if self.focal_loss:
+            ciou_loss= (iou**self.focal_gamma)*(1 - ciou)
+        else:
+            ciou_loss = 1 - ciou
+        ciou_loss = torch.nan_to_num(ciou_loss, nan=0.0, posinf=0.0, neginf=0.0)
         
-        return 1 - ciou
+        return ciou_loss.mean()
     
     def _eiou_loss(
                     self,
@@ -369,7 +383,7 @@ class YoloOneLoss(nn.Module):
                     target_boxes: torch.Tensor, 
                     )-> torch.Tensor:
         
-        px1, py1, px2, py2 = self._xywh_to_xyxy(pred_boxes)
+        px1, py1, px2, py2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
         tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
 
         inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
@@ -379,7 +393,7 @@ class YoloOneLoss(nn.Module):
         pred_area = torch.clamp(px2 - px1, min=0) * torch.clamp(py2 - py1, min=0)
         target_area = torch.clamp(tx2 - tx1, min=0) * torch.clamp(ty2 - ty1, min=0)
         union_area = pred_area + target_area - inter_area
-        iou = inter_area / (union_area + 1e-6)
+        iou = inter_area / torch.clamp(union_area, min=1e-6)
 
         ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
         ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
@@ -396,22 +410,29 @@ class YoloOneLoss(nn.Module):
         rho2_w = (pw - tw) ** 2
         rho2_h = (ph - th) ** 2
 
+
+        # EIoU Loss
         eiou = iou - rho2 / (c2+ 1e-6) - rho2_w / (wc2 + 1e-6) - rho2_h / (hc2 + 1e-6)
-        return (iou**self.focal_gamma)*(1 - eiou)
+        
+        if self.focal_loss:
+            eiou_loss = (iou**self.focal_gamma)*(1 - eiou)
+        else:
+            eiou_loss = 1 - eiou
+
+        eiou_loss = torch.nan_to_num(eiou_loss, nan=0.0, posinf=0.0, neginf=0.0)
+
+        return eiou_loss.mean()
+    
 
     def _meiou_loss(
-                    self,
-                    pred_boxes: torch.Tensor, 
-                    target_boxes: torch.Tensor, 
-                    lambda1: float =0.3, 
-                    lambda2: float =0.5, 
-                    lambda3: float = 0.2
-                    )-> torch.Tensor:
-        
+        self,
+        pred_boxes: torch.Tensor,
+        target_boxes: torch.Tensor,
+    ) -> torch.Tensor:
 
         px1, py1, px2, py2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
         tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
-        
+
         inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
         inter_x2, inter_y2 = torch.min(px2, tx2), torch.min(py2, ty2)
         inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
@@ -419,40 +440,161 @@ class YoloOneLoss(nn.Module):
         pred_area = torch.clamp(px2 - px1, min=0) * torch.clamp(py2 - py1, min=0)
         target_area = torch.clamp(tx2 - tx1, min=0) * torch.clamp(ty2 - ty1, min=0)
         union_area = pred_area + target_area - inter_area
-        iou = inter_area / (union_area + 1e-6)
+        iou = inter_area / torch.clamp(union_area, min=1e-6)
 
         ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
         ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
         ew, eh = ex2 - ex1, ey2 - ey1
         c2 = ew**2 + eh**2 
-        
+
+        pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
+        tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
+        rho2 = (pcx - tcx)**2 + (pcy - tcy)**2
+
+        pw, ph = px2 - px1, py2 - py1
+        tw, th = tx2 - tx1, ty2 - ty1
         wc2, hc2 = ew**2, eh**2 
         rho2_w = (pw - tw) ** 2
         rho2_h = (ph - th) ** 2
 
+
+        # Absolute shape cost
+ 
+        v_absolute = rho2_w / (wc2 + 1e-6) + rho2_h / (hc2 + 1e-6)
+
+        # Angle cost
+        #ch = torch.max(py2, ty2) - torch.min(py1, ty1)
+        sigma = torch.sqrt(rho2)
+        sin_alpha_1 = torch.abs(pcx - tcx) / torch.clamp(sigma, min=1e-6)
+        sin_alpha_2 = torch.abs(pcy - tcy) / torch.clamp(sigma, min=1e-6)
+        threshold = pow(2, 0.5) / 2
+        sin_alpha = torch.where(sin_alpha_1 > threshold, sin_alpha_2, sin_alpha_1)
+
+        #delta_angle = 1 - 2 * torch.pow(torch.sin(
+        #    torch.arcsin(ch / (sigma + 1e-6)) - torch.pi / 4), 2)
+
+        sin_angle = 2*torch.pow(torch.sin(
+            torch.arcsin(sin_alpha) - torch.pi / 4), 2)
+        delta_angle = 1 -  sin_angle
+        
+        delta_angle = torch.where(delta_angle<=1e-6, torch.tensor(0.0, dtype=delta_angle.dtype), delta_angle)
+    
+        # MEIoU Loss
+        meiou = iou - rho2 / torch.clamp(c2, min=1e-6) - v_absolute - delta_angle
+
+        if self.focal_loss:
+            meiou_loss = (iou**self.focal_gamma)*(1 - meiou)
+        else:
+            meiou_loss = 1 - meiou
+
+
+        meiou_loss = torch.nan_to_num(meiou_loss, nan=0.0, posinf=0.0, neginf=0.0)
+        return meiou_loss.mean()
+
+    
+
+    def _siou_loss(
+        self,
+        pred_boxes: torch.Tensor,
+        target_boxes: torch.Tensor,
+    ) -> torch.Tensor:
+ 
+
+        
+        # IoU Cost
+        
+        px1, py1, px2, py2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
+        tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
+
+        inter_x1 = torch.max(px1, tx1)
+        inter_y1 = torch.max(py1, ty1)
+        inter_x2 = torch.min(px2, tx2)
+        inter_y2 = torch.min(py2, ty2)
+
+        inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
+        pred_area = torch.clamp(px2 - px1, min=0) * torch.clamp(py2 - py1, min=0)
+        target_area = torch.clamp(tx2 - tx1, min=0) * torch.clamp(ty2 - ty1, min=0)
+
+        union_area = pred_area + target_area - inter_area
+        iou = inter_area / torch.clamp(union_area, min=1e-6)
+
+        # Angle Cost
+
+        ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
+        ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
+        ew, eh = ex2 - ex1, ey2 - ey1
+        c2 = ew**2 + eh**2 
+
         pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
         tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
-        rho2_center = (pcx - tcx)**2 + (pcy - tcy)**2
+        rho2 = (pcx - tcx)**2 + (pcy - tcy)**2
 
         pw, ph = px2 - px1, py2 - py1
         tw, th = tx2 - tx1, ty2 - ty1
 
-        #v_aspect = (4 / (torch.pi**2)) * (torch.atan(tw / th) - torch.atan(pw / ph))**2
-        v_absolute =  rho2_w / (wc2 + 1e-6) + rho2_h / (hc2 + 1e-6)
-        #v_absolute = ((ph - th)**2 + (pw - tw)**2) / (c2+ 1e-6)
+        # wc2, hc2 = ew**2, eh**2 
+        # rho2_w = (pw - tw) ** 2
+        # rho2_h = (ph - th) ** 2
+
+        sigma = torch.sqrt(rho2)
+        sin_alpha_1 = torch.abs(pcx - tcx) / torch.clamp(sigma, min=1e-6)
+        sin_alpha_2 = torch.abs(pcy - tcy) / torch.clamp(sigma, min=1e-6)
+        threshold = pow(2, 0.5) / 2
+        sin_alpha = torch.where(sin_alpha_1 > threshold, sin_alpha_2, sin_alpha_1)
+
+        #delta_angle = 1 - 2 * torch.pow(torch.sin(
+        #    torch.arcsin(ch / (sigma + 1e-6)) - torch.pi / 4), 2)
+
+        sin_angle = 2*torch.pow(torch.sin(
+            torch.arcsin(sin_alpha) - torch.pi / 4), 2)
+        delta_angle = 1 -  sin_angle
         
-        ch = torch.max(ph, th) / 2
-        sigma = torch.sqrt(ew**2 + eh**2)
-        delta_angle = 1 - 2 * torch.sin(torch.arcsin(torch.clamp(ch / (sigma + 1e-6), -1.0, 1.0)) - (torch.pi / 4))**2
+        delta_angle = torch.where(delta_angle<=1e-6, torch.tensor(0.0, dtype=delta_angle.dtype), delta_angle)
 
-        #v_co = lambda1 * v_aspect + lambda2 * v_absolute + lambda3 * delta_angle
-        #alpha = v_co / ((1 - iou) + v_co + 1e-6)
+        # Distance Cost
+        ch = torch.max(py2, ty2) - torch.min(py1, ty1)
+        cw = torch.max(px2, tx2) - torch.min(px1, tx1)
 
-        meiou = iou - rho2_center / c2 - v_absolute - delta_angle #- 0.2 * delta_angle
+        rho_x = ((pcx - tcx) / (cw + 1e-6)) ** 2
+        rho_y = ((pcy - tcy) / (ch + 1e-6)) ** 2
+        gamma = 2 - delta_angle
+        distance_cost = 2 - torch.exp(gamma * rho_x) - torch.exp(gamma * rho_y)
 
-        return (iou**self.focal_gamma)*(1 - meiou)
-    
-    
+        # Shape Cost
+        
+        pw, ph = px2 - px1, py2 - py1
+        tw, th = tx2 - tx1, ty2 - ty1
+
+
+        omiga_w = torch.abs(pw - tw) / (torch.max(pw, tw) + 1e-6)
+        omiga_h = torch.abs(ph - th) / (torch.max(ph, th) + 1e-6)
+
+        shape_cost = (
+            torch.pow(1 - torch.exp(-1 * omiga_w), self.theta) +
+            torch.pow(1 - torch.exp(-1 * omiga_h), self.theta)
+        )
+
+
+        # SIoU Loss
+        siou = iou - (distance_cost + shape_cost) / 2
+
+        if self.focal_loss:
+            siou_loss = (iou**self.focal_gamma)*(1 - siou)
+        else:
+            siou_loss = 1 - siou
+        siou_loss = torch.nan_to_num(siou_loss, nan=0.0, posinf=0.0, neginf=0.0)
+        return siou_loss.mean()
+
+
+    def _xywh_to_xyxy(self, boxes: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        """Convert center format to corner format"""
+        x, y, w, h = boxes.unbind(-1)
+        x1 = x - w / 2
+        y1 = y - h / 2
+        x2 = x + w / 2
+        y2 = y + h / 2
+        return x1, y1, x2, y2
+
 
 def create_yolo_one_loss(
     box_weight: float = 7.5,
@@ -463,7 +605,9 @@ def create_yolo_one_loss(
     focal_gamma: float = 1.5,
     iou_type: str = 'meiou',
     label_smoothing: float = 0.0,
-    p5_weight_boost: float = 1.2
+    p5_weight_boost: float = 1.2,
+    theta: int = 4,
+    focal_loss: bool= False
 ) -> YoloOneLoss:
     """Factory function to create anchor-free YOLO-One loss"""
     return YoloOneLoss(
@@ -475,5 +619,7 @@ def create_yolo_one_loss(
         focal_gamma=focal_gamma,
         iou_type=iou_type,
         label_smoothing=label_smoothing,
-        p5_weight_boost=p5_weight_boost
+        p5_weight_boost=p5_weight_boost,
+        theta = theta,
+        focal_loss=focal_loss
     )

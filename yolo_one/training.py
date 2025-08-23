@@ -150,16 +150,39 @@ class YoloOneTrainer:
         """Create loss function"""
         
         loss_config = self.config['loss']
+
+    
+
+    
         
         criterion = create_yolo_one_loss(
             box_weight=loss_config.get('box_weight', 7.5),
             obj_weight=loss_config.get('obj_weight', 1.0),
+            aspect_weight=loss_config.get('aspect_weight', 0.5),
+            shape_conf_weight=loss_config.get('shape_conf_weight', 0.2),
             focal_alpha=loss_config.get('focal_alpha', 0.25),
             focal_gamma=loss_config.get('focal_gamma', 1.5),
             iou_type=loss_config.get('iou_type', 'meiou'),
             label_smoothing=loss_config.get('label_smoothing', 0.0),
-            p5_weight_boost=loss_config.get('p5_weight_boost', 1.2)
+            p5_weight_boost=loss_config.get('p5_weight_boost', 1.2),
+            theta = loss_config.get('theta', 4.0),
+            focal_loss = loss_config.get('focal_loss', False)
         )
+
+
+        # criterion = create_yolo_one_loss(
+        #     box_weight=loss_config['box_weight'],
+        #     obj_weight=loss_config['obj_weight'],
+        #     aspect_weight=loss_config['aspect_weight'],
+        #     shape_conf_weight=loss_config['shape_conf_weight'],
+        #     focal_alpha=loss_config['focal_alpha'],
+        #     focal_gamma=loss_config['focal_gamma'],
+        #     iou_type=loss_config['iou_type'],
+        #     label_smoothing=loss_config['label_smoothing'],
+        #     p5_weight_boost=loss_config['p5_weight_boost'],
+        #     theta = loss_config['theta'], 
+        #     focal_loss = loss_config['focal_loss']
+        #  )
         
         return criterion.to(self.device)
     
