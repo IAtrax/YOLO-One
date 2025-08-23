@@ -254,7 +254,7 @@ class YoloOneLoss(nn.Module):
             # MSE fallback
             loss = F.mse_loss(pred_xy, target_xy) + F.mse_loss(pred_wh, target_wh)
         
-        return loss.mean()
+        return loss
     
     def _compute_aspect_loss(
         self,
@@ -374,6 +374,7 @@ class YoloOneLoss(nn.Module):
         else:
             ciou_loss = 1 - ciou
         ciou_loss = torch.nan_to_num(ciou_loss, nan=0.0, posinf=0.0, neginf=0.0)
+        
         return ciou_loss.mean()
     
     def _eiou_loss(
