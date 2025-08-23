@@ -1,5 +1,6 @@
 import unittest
 import torch
+import torch.nn as nn
 
 
 from yolo_one.losses import YoloOneLoss
@@ -7,13 +8,151 @@ from yolo_one.losses import YoloOneLoss
 
 class TestBoxLoss(unittest.TestCase):
 
+    
+
     def setUp(self):
 
         """List of losses to test"""
         self.obj = YoloOneLoss()
         self.loss_methods = ["_ciou_loss", "_eiou_loss", "_meiou_loss", "_siou_loss"]
-  
+        self.chosen_loss = "meiou"
+        self.type_loss = ["ciou", "eiou", "mieou", "siou"]
+    def test_default_initialisation(self):
 
+        """Test default values"""
+
+        loss_fn = YoloOneLoss()
+        self.assertEqual(loss_fn.box_weight, 7.5)
+        self.assertEqual(loss_fn.obj_weight, 1.0)
+        self.assertEqual(loss_fn.aspect_weight, 0.5)
+        self.assertEqual(loss_fn.shape_conf_weight, 0.2)
+        self.assertEqual(loss_fn.focal_alpha, 0.25)
+        self.assertEqual(loss_fn.focal_gamma, 1.5)
+        self.assertEqual(loss_fn.iou_type, self.chosen_loss)
+        self.assertEqual(loss_fn.label_smoothing, 0.0)
+        self.assertEqual(loss_fn.p5_weight_boost, 1.2)
+        self.assertEqual(loss_fn.theta, 4)
+        self.assertFalse(loss_fn.focal_loss)
+        self.assertIsInstance(loss_fn.bce_loss, nn.BCEWithLogitsLoss)
+        self.assertIsInstance(loss_fn.mse_loss, nn.MSELoss)
+
+    
+    def test_custom_initialization(self):
+        """Test with custom parameters"""
+        loss_fn = YoloOneLoss(
+            box_weight=10.0,
+            obj_weight=2.0,
+            aspect_weight=1.5,
+            shape_conf_weight=0.9,
+            focal_alpha=0.5,
+            focal_gamma=2.0,
+            iou_type=self.chosen_loss,
+            label_smoothing=0.1,
+            p5_weight_boost=2.0,
+            theta=8,
+            focal_loss=True
+        )
+        self.assertEqual(loss_fn.box_weight, 10.0)
+        self.assertEqual(loss_fn.obj_weight, 2.0)
+        self.assertEqual(loss_fn.aspect_weight, 1.5)
+        self.assertEqual(loss_fn.shape_conf_weight, 0.9)
+        self.assertEqual(loss_fn.focal_alpha, 0.5)
+        self.assertEqual(loss_fn.focal_gamma, 2.0)
+        self.assertEqual(loss_fn.iou_type, self.chosen_loss)
+        self.assertEqual(loss_fn.label_smoothing, 0.1)
+        self.assertEqual(loss_fn.p5_weight_boost, 2.0)
+        self.assertEqual(loss_fn.theta, 8)
+        self.assertTrue(loss_fn.focal_loss) 
+
+    def test_default_vs_custom_same_values(self):
+        """Test default == custom when we have the same values"""
+        loss_fn_default = YoloOneLoss()
+        loss_fn_custom = YoloOneLoss(
+            box_weight=7.5,
+            obj_weight=1.0,
+            aspect_weight=0.5,
+            shape_conf_weight=0.2,
+            focal_alpha=0.25,
+            focal_gamma=1.5,
+            iou_type=self.chosen_loss,
+            label_smoothing=0.0,
+            p5_weight_boost=1.2,
+            theta=4,
+            focal_loss=False
+        )
+
+        # Float comparison with Equal
+        self.assertEqual(loss_fn_default.box_weight, loss_fn_custom.box_weight)
+        self.assertEqual(loss_fn_default.obj_weight, loss_fn_custom.obj_weight)
+        self.assertEqual(loss_fn_default.aspect_weight, loss_fn_custom.aspect_weight)
+        self.assertEqual(loss_fn_default.shape_conf_weight, loss_fn_custom.shape_conf_weight)
+        self.assertEqual(loss_fn_default.focal_alpha, loss_fn_custom.focal_alpha)
+        self.assertEqual(loss_fn_default.focal_gamma, loss_fn_custom.focal_gamma)
+        self.assertEqual(loss_fn_default.iou_type, loss_fn_custom.iou_type)
+        self.assertEqual(loss_fn_default.label_smoothing, loss_fn_custom.label_smoothing)
+        self.assertEqual(loss_fn_default.p5_weight_boost, loss_fn_custom.p5_weight_boost)
+        self.assertEqual(loss_fn_default.theta, loss_fn_custom.theta)
+        self.assertEqual(loss_fn_default.focal_loss, loss_fn_custom.focal_loss)
+
+        # Check that if it is the good loss type 
+        self.assertIsInstance(loss_fn_default.bce_loss, nn.BCEWithLogitsLoss)
+        self.assertIsInstance(loss_fn_custom.bce_loss, nn.BCEWithLogitsLoss)
+        self.assertIsInstance(loss_fn_default.mse_loss, nn.MSELoss)
+        self.assertIsInstance(loss_fn_custom.mse_loss, nn.MSELoss)
+
+        # Check that the internal parameters are identical
+        self.assertEqual(loss_fn_default.bce_loss.reduction, loss_fn_custom.bce_loss.reduction)
+        self.assertEqual(loss_fn_default.mse_loss.reduction, loss_fn_custom.mse_loss.reduction)
+
+
+    def test_compute_anchor_free_box_loss_scalar(self):
+
+        pred_boxes = torch.tensor([[0.0, 0.0, 0.0, 0.0],
+                                        [1.0, 1.0, 0.3, 0.3]], dtype=torch.float32)
+        target_boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0],
+                                          [1.0, 1.0, 0.6, 0.6]], dtype=torch.float32)
+        
+
+        for name in self.type_loss:
+            loss_fn = YoloOneLoss(iou_type=name)
+            loss = loss_fn._compute_anchor_free_box_loss(pred_boxes, target_boxes, stride=1, grid_h=2, grid_w=2)
+            self.assertEqual(loss.shape, torch.Size([]))
+
+    def test_compute_anchor_free_box_loss_positive(self):
+
+        pred_boxes = torch.tensor([[0.0, 0.0, 0.0, 0.0],
+                                        [1.0, 1.0, 0.3, 0.3]], dtype=torch.float32)
+        target_boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0],
+                                          [1.0, 1.0, 0.6, 0.6]], dtype=torch.float32)
+
+        for name in self.type_loss:
+            loss_fn = YoloOneLoss(iou_type=name)
+            loss = loss_fn._compute_anchor_free_box_loss(pred_boxes, target_boxes, stride=1, grid_h=2, grid_w=2)
+            self.assertGreaterEqual(loss.item(), 0)
+
+    def test_aspect_loss(self):
+ 
+        pred_box = torch.tensor([0.5, 0.8, 0.3])
+        target_box = torch.tensor([0.6, 0.7, 0.2])
+        loss = self.obj._compute_aspect_loss(pred_box, target_box)
+        self.assertIsInstance(loss, torch.Tensor)
+        self.assertEqual(loss.dim(), 0)  # must be scalar 
+        self.assertGreaterEqual(loss.item(), 0.0)
+
+
+    def test_shape_conf_loss(self):
+
+        pred = torch.tensor([0.0, 1.0, -1.0])
+        target = torch.tensor([0.0, 1.0, 0.0])
+        loss = self.obj._compute_shape_confidence_loss(pred, target)
+
+        self.assertIsInstance(loss, torch.Tensor)
+        self.assertEqual(loss.dim(), 0)
+        self.assertGreaterEqual(loss.item(), 0.0)
+
+    
+
+    
     def test_idententical_boxes(self):
         """Loss should be equal to 0 for identical boxes"""
         pred_box = torch.tensor([[0.0, 0.0, 1.0, 1.0]])
