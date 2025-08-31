@@ -538,7 +538,6 @@ class YoloOneLoss(nn.Module):
         ch = torch.abs(pred_center_y - target_center_y)
         sigma = torch.sqrt(dist_center_2)
 
-        print("sigma", sigma)
         delta_angle_loss = torch.zeros_like(sigma)
         mask = sigma > 1e-6
 
@@ -546,8 +545,7 @@ class YoloOneLoss(nn.Module):
         safe_ratio = ch[mask] / sigma[mask]
         delta_angle_loss[mask] = 1 - 2 * torch.pow(
             torch.sin(torch.arcsin(safe_ratio) - torch.pi / 4), 2)
-        
-        print("delta_angle_loss", delta_angle_loss)
+
          
         # MEIoU Loss
         eiou_loss  =  1 - iou + dist_center_2 / enclosed_2  + height_width_loss
