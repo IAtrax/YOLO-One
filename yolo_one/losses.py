@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from yolo_one.utils.general import box_cxcywh_to_xyxy
 from typing import List, Tuple, Dict, Optional
-import numpy as np
+from termcolor import colored
 
 class YoloOneLoss(nn.Module):
     """
@@ -502,7 +502,6 @@ class YoloOneLoss(nn.Module):
         )
 
 
-
         pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
         target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
 
@@ -517,7 +516,7 @@ class YoloOneLoss(nn.Module):
 
         enclosed_x1, enclosed_y1 = torch.min(pred_x1, target_x1), torch.min(pred_y1, target_y1)
         enclosed_x2, enclosed_y2 = torch.max(pred_x2, target_x2), torch.max(pred_y2, target_y2)
-        enclosed_w, enclosed_h = enclosed_x2 - enclosed_x1, enclosed_y2 - enclosed_y1
+        enclosed_w, enclosed_h = torch.abs(enclosed_x2 - enclosed_x1), torch.abs(enclosed_y2 - enclosed_y1)
         enclosed_2 = enclosed_w**2 + enclosed_h**2 
 
         pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
@@ -527,26 +526,20 @@ class YoloOneLoss(nn.Module):
         pred_w, pred_h = pred_x2 - pred_x1, pred_y2 - pred_y1
         target_w, target_h = target_x2 - target_x1, target_y2 - target_y1
         #w_center_2, h_center_2 = enclosed_w, enclosed_h 
+        # Absolute shape cost
         rho2_w = (pred_w - target_w) ** 2
         rho2_h = (pred_h - target_h) ** 2
-
-        # Absolute shape cost
         height_width_loss = rho2_w / enclosed_w  + rho2_h / enclosed_h
 
         # Angle cost
         #ch = torch.max(pred_center_y, target_center_y) - torch.min(pred_center_y, target_center_y)
         ch = torch.abs(pred_center_y - target_center_y)
-        sigma = torch.sqrt(dist_center_2)
-
-        delta_angle_loss = torch.zeros_like(sigma)
-        mask = sigma > 1e-6
-
-        # compute only for sigma > 1e-6
-        safe_ratio = ch[mask] / sigma[mask]
-        delta_angle_loss[mask] = 1 - 2 * torch.pow(
-            torch.sin(torch.arcsin(safe_ratio) - torch.pi / 4), 2)
-
-         
+        sigma = torch.sqrt(torch.abs(dist_center_2))
+        delta_angle_loss = torch.where(sigma > 1e-6, 
+                                       1 - 2 * torch.pow(torch.sin(torch.arcsin(ch / sigma) - torch.pi / 4), 2),
+                                         torch.zeros_like(sigma))
+    
+           
         # MEIoU Loss
         eiou_loss  =  1 - iou + dist_center_2 / enclosed_2  + height_width_loss
         meiou_loss = eiou_loss + delta_angle_loss
