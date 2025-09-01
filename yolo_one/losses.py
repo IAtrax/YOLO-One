@@ -392,8 +392,8 @@ class YoloOneLoss(nn.Module):
                     self,
                     pred_boxes: torch.Tensor, 
                     target_boxes: torch.Tensor, 
-                    fix_width_box: int = 1e3,
-                     fix_height_box: int = 1e3,
+                    width_img: int = 640,
+                    height_img: int = 640,
                     )-> torch.Tensor:
         
         """Efficient IoU loss implementation for anchor-free"""
@@ -442,8 +442,8 @@ class YoloOneLoss(nn.Module):
         pred_w, pred_h = pred_x2 - pred_x1, pred_y2 - pred_y1
         target_w, target_h = target_x2 - target_x1, target_y2 - target_y1
         # Fix box size : the box size practically does not exceed 99% of the entire image size
-        pred_w, pred_h = torch.clamp(pred_w, max=fix_width_box), torch.clamp(pred_h, max=fix_height_box)
-        target_w, target_h = torch.clamp(target_w, max=fix_width_box), torch.clamp(target_h, max=fix_height_box)
+        pred_w, pred_h = torch.clamp(pred_w, max=0.99*width_img), torch.clamp(pred_h, max=0.99*height_img)
+        target_w, target_h = torch.clamp(target_w, max=0.99*width_img), torch.clamp(target_h, max=0.99*height_img)
         rho2_w = (pred_w - target_w) ** 2
         rho2_h = (pred_h - target_h) ** 2
         height_width_loss = (rho2_h / enclosed_h)  +  (rho2_w / enclosed_w)
@@ -468,8 +468,8 @@ class YoloOneLoss(nn.Module):
         self,
         pred_boxes: torch.Tensor,
         target_boxes: torch.Tensor,
-        fix_width_box: int = 1e3,
-        fix_height_box: int = 1e3,
+        width_img: int = 640,
+        height_img: int = 640,
         
     ) -> torch.Tensor:
         
@@ -525,8 +525,8 @@ class YoloOneLoss(nn.Module):
         pred_w, pred_h = pred_x2 - pred_x1, pred_y2 - pred_y1
         target_w, target_h = target_x2 - target_x1, target_y2 - target_y1
         # Fix box size : the box size practically does not exceed 99% of the entire image size
-        pred_w, pred_h = torch.clamp(pred_w, max=fix_width_box), torch.clamp(pred_h, max=fix_height_box)
-        target_w, target_h = torch.clamp(target_w, max=fix_width_box), torch.clamp(target_h, max=fix_height_box)
+        pred_w, pred_h = torch.clamp(pred_w, max=0.99*width_img), torch.clamp(pred_h, max=0.99*height_img)
+        target_w, target_h = torch.clamp(target_w, max=0.99*width_img), torch.clamp(target_h, max=0.99*height_img)
         rho2_w = (pred_w - target_w) ** 2
         rho2_h = (pred_h - target_h) ** 2
         height_width_loss = (rho2_h / enclosed_h)  +  (rho2_w / enclosed_w)
