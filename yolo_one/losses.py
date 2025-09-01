@@ -375,17 +375,20 @@ class YoloOneLoss(nn.Module):
         alpha = v / torch.clamp(1 - iou + v, min=1e-6)
         
         # CIoU Loss
-        ciou_loss = iou - dist_center_2 / enclosed_2 - alpha * v
+        ciou_loss = 1- iou + dist_center_2 / enclosed_2 + alpha * v
 
         if self.focal_loss:
-            ciou_loss= (iou**self.focal_gamma)*(1 - ciou_loss)
+            ciou_loss= (iou**self.focal_gamma)*(ciou_loss)
 
         # Mask invalid boxes (sum==0)
         valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
+
         if valid_mask.any():
-            return ciou_loss[valid_mask].mean()
+            ciou_loss = ciou_loss[valid_mask].mean()
         else:
-            return torch.tensor(0., device=pred_boxes.device)
+            ciou_loss = torch.tensor(0., device=pred_boxes.device)
+
+        return ciou_loss
 
     
     def _eiou_loss(
@@ -457,10 +460,13 @@ class YoloOneLoss(nn.Module):
 
         # Mask invalid boxes (sum==0)
         valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
+
         if valid_mask.any():
-            return eiou_loss[valid_mask].mean()
+            eiou_loss = eiou_loss[valid_mask].mean()
         else:
-            return torch.tensor(0., device=pred_boxes.device)
+            eiou_loss = torch.tensor(0., device=pred_boxes.device)
+
+        return eiou_loss
 
     
 
@@ -489,12 +495,6 @@ class YoloOneLoss(nn.Module):
 
         pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
         target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
-
-        # Reorder the corner so that x1<=x2 and y1<=y2
-        # pred_x1, pred_x2 = torch.min(pred_x1, pred_x2), torch.max(pred_x1, pred_x2)
-        # pred_y1, pred_y2 = torch.min(pred_y1, pred_y2), torch.max(pred_y1, pred_y2)
-        # target_x1, target_x2 = torch.min(target_x1, target_x2), torch.max(target_x1, target_x2)
-        # target_y1, target_y2 = torch.min(target_y1, target_y2), torch.max(target_y1, target_y2)
 
         ## Intersection
         inter_x1, inter_y1 = torch.max(pred_x1, target_x1), torch.max(pred_y1, target_y1)
@@ -528,7 +528,7 @@ class YoloOneLoss(nn.Module):
         pred_w, pred_h = torch.clamp(pred_w, max=0.99*width_img), torch.clamp(pred_h, max=0.99*height_img)
         target_w, target_h = torch.clamp(target_w, max=0.99*width_img), torch.clamp(target_h, max=0.99*height_img)
         rho2_w = (pred_w - target_w) ** 2
-        rho2_h = (pred_h - target_h) ** 2
+        rho2_h = (pred_h - target_h) ** 2 
         height_width_loss = (rho2_h / enclosed_h)  +  (rho2_w / enclosed_w)
 
         ## Angle cost
@@ -537,10 +537,22 @@ class YoloOneLoss(nn.Module):
         sigma = torch.sqrt(torch.abs(dist_center_2))
         delta_angle_loss = torch.where(sigma > 1e-6, 
                                        1 - 2 * torch.pow(torch.sin(torch.arcsin(ch / sigma) - torch.pi / 4), 2),
-                                        torch.zeros_like(sigma))  
+                                        torch.zeros_like(sigma))
+
         # MEIoU Loss
-        eiou_loss  =  1 - iou + dist_center_2 / enclosed_2  + height_width_loss
+        eiou_loss  =  1 - iou + dist_center_2 / enclosed_2 + height_width_loss
         meiou_loss = eiou_loss + delta_angle_loss
+
+        if self.focal_loss:
+            meiou_loss = (iou**self.focal_gamma)*(meiou_loss)
+
+        # Mask invalid boxes (sum==0)
+        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
+
+        if valid_mask.any():
+            meiou_loss = meiou_loss[valid_mask].mean()
+        else:
+            meiou_loss = torch.tensor(0., device=pred_boxes.device)
 
 
         if torch.isnan(meiou_loss).any() or torch.isinf(meiou_loss).any():
@@ -554,17 +566,9 @@ class YoloOneLoss(nn.Module):
             print('delta angle loss', delta_angle_loss)
             raise ValueError("NaN/Inf in  MEIoU Loss")
 
-        if self.focal_loss:
-            meiou_loss = (iou**self.focal_gamma)*(meiou_loss)
 
-        # Mask invalid boxes (sum==0)
-        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
-        if valid_mask.any():
-            return meiou_loss[valid_mask].mean()
-        else:
-            return torch.tensor(0., device=pred_boxes.device)
-
-
+        return meiou_loss
+    
     def _siou_loss(
         self,
         pred_boxes: torch.Tensor,
@@ -679,6 +683,7 @@ class YoloOneLoss(nn.Module):
             siou_loss = 1 - siou
         siou_loss = torch.nan_to_num(siou_loss, nan=0.0, posinf=0.0, neginf=0.0)
         return siou_loss.mean()
+
 
 
     def _xywh_to_xyxy(self, boxes: torch.Tensor) -> Tuple[torch.Tensor, ...]:
