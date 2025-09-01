@@ -167,6 +167,49 @@ class TestBoxLoss(unittest.TestCase):
             loss = loss_fn(pred_box, target_box)
             self.assertTrue(torch.allclose(loss, torch.tensor(0.0)), f"{name}: expected 0, got {loss.item()}")
 
+    def test_coordinate_zero_all(self):
+        "Loss should be equal to 0 if the coordinates are equal to 0"
+        
+        pred_box = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        for name in self.loss_methods:
+            loss_fn = getattr(self.obj, name)
+            loss = loss_fn(pred_box, target_box)
+            self.assertEqual(loss, 0, f"{name}: loss should be equal to 0")
+
+    def test_coordinate_zero_pred(self):
+        "Loss should be equal to 0 if the coordinates are equal to 0"
+        
+        pred_box = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.0, 0.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+        for name in self.loss_methods:
+            loss_fn = getattr(self.obj, name)
+            loss = loss_fn(pred_box, target_box)
+            self.assertGreaterEqual(loss, 0, f"{name}: loss should be >= 0")
+
+
+    def test_coordinate_zero_target(self):
+        "Loss should be equal to 0 if the coordinates are equal to 0"
+        
+        pred_box = torch.tensor([0.0, 0.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        for name in self.loss_methods:
+            loss_fn = getattr(self.obj, name)
+            loss = loss_fn(pred_box, target_box)
+            self.assertGreaterEqual(loss, 0, f"{name}: loss should be >= 0")
+
+    def test_coordinate_point(self):
+        "Loss should be equal to 0 if the coordinates are equal to 0"
+        
+        pred_box = torch.tensor([1.0, 2, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([2.0, 3.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        for name in self.loss_methods:
+            loss_fn = getattr(self.obj, name)
+            loss = loss_fn(pred_box, target_box)
+            self.assertGreaterEqual(loss, 0, f"{name}: loss should be >= 0")
+    
+
+
 
     def test_shifted_boxes(self):
         """Loss should be >0 for shifted boxes"""
