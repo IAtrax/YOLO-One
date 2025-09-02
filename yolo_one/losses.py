@@ -375,7 +375,7 @@ class YoloOneLoss(nn.Module):
         alpha = v / torch.clamp(1 - iou + v, min=1e-6)
         
         # CIoU Loss
-        ciou_loss = 1- iou + dist_center_2 / enclosed_2 + alpha * v
+        ciou_loss = 1- iou + (dist_center_2 / enclosed_2) + alpha * v
 
         # Focal 
         if self.focal_loss:
@@ -454,7 +454,7 @@ class YoloOneLoss(nn.Module):
 
 
         # EIoU Loss
-        eiou_loss  =  1 - iou + dist_center_2 / enclosed_2  + height_width_loss
+        eiou_loss  =  1 - iou + (dist_center_2 / enclosed_2)  + height_width_loss
         
         # Focal
         if self.focal_loss:
@@ -541,7 +541,7 @@ class YoloOneLoss(nn.Module):
                                         torch.zeros_like(sigma))
 
         # MEIoU Loss
-        eiou_loss  =  1 - iou + dist_center_2 / enclosed_2 + height_width_loss
+        eiou_loss  =  1 - iou + (dist_center_2 / enclosed_2) + height_width_loss
         meiou_loss = eiou_loss + delta_angle_loss
 
         # Focal
