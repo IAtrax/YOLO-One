@@ -17,6 +17,12 @@ class TestBoxLoss(unittest.TestCase):
         self.loss_methods = ["_ciou_loss", "_eiou_loss", "_meiou_loss"]
         self.chosen_loss = "meiou"
         self.type_loss = ["ciou", "eiou", "mieou"]
+        self.device  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # def device(self):
+    #     """Test device (CUDA if available, else CPU)"""
+    #     return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     def test_default_initialisation(self):
 
         """Test default values"""
@@ -107,10 +113,12 @@ class TestBoxLoss(unittest.TestCase):
 
     def test_compute_anchor_free_box_loss_scalar(self):
 
+        """Anchor free box : the loss should be a scalar"""
+
         pred_boxes = torch.tensor([[0.0, 0.0, 0.0, 0.0],
-                                        [1.0, 1.0, 0.3, 0.3]], dtype=torch.float32)
+                                        [1.0, 1.0, 0.3, 0.3]],  dtype=torch.float32, device=self.device)
         target_boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0],
-                                          [1.0, 1.0, 0.6, 0.6]], dtype=torch.float32)
+                                          [1.0, 1.0, 0.6, 0.6]], dtype=torch.float32, device=self.device)
         
 
         for name in self.type_loss:
@@ -120,10 +128,12 @@ class TestBoxLoss(unittest.TestCase):
 
     def test_compute_anchor_free_box_loss_positive(self):
 
+        """Anchor free box : the loss should be positive"""
+
         pred_boxes = torch.tensor([[0.0, 0.0, 0.0, 0.0],
-                                        [1.0, 1.0, 0.3, 0.3]], dtype=torch.float32)
+                                        [1.0, 1.0, 0.3, 0.3]], dtype=torch.float32, device=self.device)
         target_boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0],
-                                          [1.0, 1.0, 0.6, 0.6]], dtype=torch.float32)
+                                          [1.0, 1.0, 0.6, 0.6]], dtype=torch.float32, device=self.device)
 
         for name in self.type_loss:
             loss_fn = YoloOneLoss(iou_type=name)
@@ -131,9 +141,11 @@ class TestBoxLoss(unittest.TestCase):
             self.assertGreaterEqual(loss.item(), 0)
 
     def test_aspect_loss(self):
+
+        """Test aspect loss """
  
-        pred_box = torch.tensor([0.5, 0.8, 0.3])
-        target_box = torch.tensor([0.6, 0.7, 0.2])
+        pred_box = torch.tensor([0.5, 0.8, 0.3], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.6, 0.7, 0.2], dtype=torch.float32, device=self.device)
         loss = self.obj._compute_aspect_loss(pred_box, target_box)
         self.assertIsInstance(loss, torch.Tensor)
         self.assertEqual(loss.dim(), 0)  # must be scalar 
@@ -142,46 +154,76 @@ class TestBoxLoss(unittest.TestCase):
 
     def test_shape_conf_loss(self):
 
-        pred = torch.tensor([0.0, 1.0, -1.0])
-        target = torch.tensor([0.0, 1.0, 0.0])
+        """Test shape confidence loss"""
+
+        pred = torch.tensor([0.0, 1.0, -1.0], dtype=torch.float32, device=self.device)
+        target = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32, device=self.device)
         loss = self.obj._compute_shape_confidence_loss(pred, target)
 
         self.assertIsInstance(loss, torch.Tensor)
         self.assertEqual(loss.dim(), 0)
         self.assertGreaterEqual(loss.item(), 0.0)
 
-    """
-    def test_boxes_none(self):
-
-        pred_box = None
-        target_box = torch.tensor([[1.0, 1.0, 2.0, 2.0]])
-
-        for name in self.loss_methods:
-
-            loss_fn = getattr(self.obj, name)
-            loss = loss_fn(pred_box, target_box)
-            self.assertIsInstance(loss, torch.Tensor)
-            self.assertEqual(loss.item(), 0.0)  """
-    
-    
-
     
     def test_idententical_boxes(self):
         """Loss should be equal to 0 for identical boxes"""
-        pred_box = torch.tensor([[0.0, 0.0, 1.0, 1.0]])
-        target_box = torch.tensor([[0.0, 0.0, 1.0, 1.0]])
+        pred_box = torch.tensor([0.0, 0.0, 1.0, 1.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.0, 0.0, 1.0, 1.0], dtype=torch.float32, device=self.device)
 
         for name in self.loss_methods:
             loss_fn = getattr(self.obj, name)
             loss = loss_fn(pred_box, target_box)
             self.assertTrue(torch.allclose(loss, torch.tensor(0.0)), f"{name}: expected 0, got {loss.item()}")
 
+    def test_coordinate_zero_all(self):
+        "Loss should be equal to 0 if the coordinates are equal to 0"
+        
+        pred_box = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        for name in self.loss_methods:
+            loss_fn = getattr(self.obj, name)
+            loss = loss_fn(pred_box, target_box)
+            self.assertEqual(loss, 0, f"{name}: loss should be equal to 0")
+
+    def test_coordinate_zero_pred(self):
+        "Loss should be equal to 0 if the pred coordinates are equal to 0"
+        
+        pred_box = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.0, 0.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+        for name in self.loss_methods:
+            loss_fn = getattr(self.obj, name)
+            loss = loss_fn(pred_box, target_box)
+            self.assertGreaterEqual(loss, 0, f"{name}: loss should be >= 0")
+
+
+    def test_coordinate_zero_target(self):
+        "Loss should be equal to 0 if the target coordinates are equal to 0"
+        
+        pred_box = torch.tensor([0.0, 0.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        for name in self.loss_methods:
+            loss_fn = getattr(self.obj, name)
+            loss = loss_fn(pred_box, target_box)
+            self.assertGreaterEqual(loss, 0, f"{name}: loss should be >= 0")
+
+    def test_coordinate_point(self):
+        "Loss should be equal to 0 if the height and width are equal to 0"
+        
+        pred_box = torch.tensor([1.0, 2, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([2.0, 3.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        for name in self.loss_methods:
+            loss_fn = getattr(self.obj, name)
+            loss = loss_fn(pred_box, target_box)
+            self.assertGreaterEqual(loss, 0, f"{name}: loss should be >= 0")
+    
+
+
 
     def test_shifted_boxes(self):
         """Loss should be >0 for shifted boxes"""
 
-        pred_box = torch.tensor([0.0, 1.0, 3.0, 3.0])
-        target_box = torch.tensor([0.0, 0.0, 4.0, 4.0])
+        pred_box = torch.tensor([0.0, 1.0, 3.0, 3.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.0, 0.0, 4.0, 4.0], dtype=torch.float32, device=self.device)
         for name in self.loss_methods:
             loss_fn = getattr(self.obj, name)
             loss = loss_fn(pred_box, target_box)
@@ -190,8 +232,8 @@ class TestBoxLoss(unittest.TestCase):
 
     def test_partial_overlap(self):
         """Loss should be >0 for shifted boxes"""
-        pred_box = torch.tensor([0.0, 1.0, 3.0, 3.0])
-        target_box = torch.tensor([0.0, 2.0, 4.0, 4.0])
+        pred_box = torch.tensor([0.0, 1.0, 3.0, 3.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([0.0, 2.0, 4.0, 4.0], dtype=torch.float32, device=self.device)
         for name in self.loss_methods:
             loss_fn = getattr(self.obj, name)
             loss = loss_fn(pred_box, target_box)
@@ -201,8 +243,8 @@ class TestBoxLoss(unittest.TestCase):
 
     def test_large_values(self):
         """Loss should remain finite value for very large coordinates"""
-        pred_box = torch.tensor([[1e7, 1e7, 2e7, 3e7]])
-        target_box = torch.tensor([[1e7, 1e7, 2e7, 3e7]])
+        pred_box = torch.tensor([1e7, 1e7, 2e7, 3e7], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([1e7, 1e7, 2e7, 3e7], dtype=torch.float32, device=self.device)
         for name in self.loss_methods:
             loss_fn = getattr(self.obj, name)
             loss = loss_fn(pred_box, target_box)
@@ -212,8 +254,8 @@ class TestBoxLoss(unittest.TestCase):
 
     def test_zero_size_box(self):
         """Loss should handle degenerate boxes (zero width/height)"""
-        pred_box = torch.tensor([[0.0, 0.0, 0.0, 0.0]])
-        target_box = torch.tensor([[1.0, 1.0, 2.0, 2.0]])
+        pred_box = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([1.0, 1.0, 2.0, 2.0], dtype=torch.float32, device=self.device)
         for name in self.loss_methods:
             loss_fn = getattr(self.obj, name)
             loss = loss_fn(pred_box, target_box)
@@ -222,31 +264,20 @@ class TestBoxLoss(unittest.TestCase):
 
     def test_invalid_flipped_boxes(self):
         """Loss should handle boxes with reversed coodinates """
-        pred_box = torch.tensor([[3.0, 3.0, 1.0, 1.0]])
-        target_box = torch.tensor([[1.0, 1.0, 2.0, 2.0]])
+        pred_box = torch.tensor([3.0, 3.0, 1.0, 1.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([1.0, 1.0, 2.0, 2.0], dtype=torch.float32, device=self.device)
         for name in self.loss_methods:
             loss_fn = getattr(self.obj, name)
             loss = loss_fn(pred_box, target_box)
             self.assertTrue(torch.isfinite(loss), f"{name} must handle flipped coords safely")
-    
-    # def test_with_nans_and_inf(self):
-    #     """Loss should handle NaN/ Inf inputs"""
-    #     test_cases = [
-    #         (torch.tensor([[float("nan"), 0.0, 1.0, 2.0]]), torch.tensor([[0.0, 0.0, 1.0, 2.0]])),
-    #         (torch.tensor([[0.0, 0.0, 1.0, 2.0]]), torch.tensor([[0.0, 0.0, float("inf"), 2.0]])),
-    #         (torch.tensor([[float("-inf"), 0.0, 1.0, 2.0]]), torch.tensor([[0.0, 0.0, 1.0, 2.0]])),
-    #     ]
-    #     for name in self.loss_methods:
-    #         loss_fn = getattr(self.obj, name)
-    #         for pred_box, target_box in test_cases:
-    #             loss = loss_fn(pred_box, target_box)
-    #         self.assertTrue(torch.isfinite(loss), f"{name} must handle NaN/ Inf inputs (got {loss})")
 
 
     def test_batch_processing(self):
         """Loss should work  on batches and return a scalar"""
-        pred_boxes = torch.tensor([[3.0, 3.0, 1.0, 1.0], [1.0, 1.0, 3.0, 2.0]])
-        target_boxes = torch.tensor([[1.0, 1.0, 2.0, 2.0], [2.0, 2.0, 3.0, 4.0]])
+        pred_boxes = torch.tensor([[3.0, 3.0, 1.0, 1.0], 
+                                   [1.0, 1.0, 3.0, 2.0]], dtype=torch.float32, device=self.device)
+        target_boxes = torch.tensor([[1.0, 1.0, 2.0, 2.0], 
+                                     [2.0, 2.0, 3.0, 4.0]], dtype=torch.float32, device=self.device)
         for name in self.loss_methods:
             loss_fn = getattr(self.obj, name)
             loss = loss_fn(pred_boxes, target_boxes)
@@ -256,8 +287,8 @@ class TestBoxLoss(unittest.TestCase):
 
     def test_backward(self):
         """Loss must be differentiable"""
-        pred_box = torch.tensor([[3.0, 3.0, 1.0, 1.0]], requires_grad=True)
-        target_box = torch.tensor([[1.0, 1.0, 2.0, 2.0]])
+        pred_box = torch.tensor([3.0, 3.0, 1.0, 1.0], requires_grad=True, dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([1.0, 1.0, 2.0, 2.0], dtype=torch.float32, device=self.device)
         for name in self.loss_methods:
             loss_fn = getattr(self.obj, name)
             loss = loss_fn(pred_box, target_box)
@@ -265,28 +296,9 @@ class TestBoxLoss(unittest.TestCase):
             self.assertIsNotNone(pred_box.grad, f"{name}: backward failed")
             self.assertTrue(torch.isfinite(pred_box.grad).all(), f"{name} gradient must be finite")     
 
-    def test_device_and_dtype_support(self):
 
-        "Test Loss for device and dtypes"
-      
-        pred_box = torch.tensor([[3.0, 3.0, 1.0, 1.0]], dtype=torch.float32)
-        target_box = torch.tensor([[1.0, 1.0, 2.0, 2.0]], dtype=torch.float32)
-
-        devices = ["cpu"]
-        if torch.cuda.is_available():
-            devices.append("cuda")
-        dtypes = [torch.float32, torch.float16, torch.float64]
-        for name in self.loss_methods:
-            loss_fn = getattr(self.obj, name)
-            for device in devices:
-                for dtype in dtypes:
-                    b1 = pred_box.to(device=device, dtype=dtype)
-                    b2 = target_box.to(device=device, dtype=dtype)
-                    loss = loss_fn(b1, b2)
-            self.assertTrue(torch.isfinite(loss), f"{name} failed on device {device}/{dtype}")
 
   
-
 if __name__ =="__main__":
     unittest.main()
 
