@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from yolo_one.utils.general import box_cxcywh_to_xyxy
 from typing import List, Tuple, Dict, Optional
-from termcolor import colored
+
 
 class YoloOneLoss(nn.Module):
     """
@@ -288,6 +288,7 @@ class YoloOneLoss(nn.Module):
         target_conf: torch.Tensor, 
         obj_mask: torch.Tensor
     ) -> torch.Tensor:
+        
         """Objectness loss with focal loss for single-class"""
         
         # Label smoothing if specified
@@ -313,70 +314,52 @@ class YoloOneLoss(nn.Module):
         
         return pos_loss + 0.05 * neg_loss
     
-    def _ciou_loss(self, pred_boxes: torch.Tensor, target_boxes: torch.Tensor) -> torch.Tensor:
+    def _ciou_loss(
+            self,
+            pred_boxes: torch.Tensor,
+            target_boxes: torch.Tensor
+            ) -> torch.Tensor:
+
         """Complete IoU loss implementation for anchor-free"""
-
-
+        
         # Pred and target boxes do not contain None 
         assert pred_boxes is not None, "pred_boxes must not be None"
-        assert target_boxes is not None, "target_boxes must not be None"
+        assert target_boxes is not None, "target_boxes must not be None" 
 
-        # Pred and target boxes do not contain NaN or Inf 
-        assert torch.isfinite(pred_boxes).all(), "pred_boxes contains NaN or Inf"
-        assert torch.isfinite(target_boxes).all(), "target_boxes contains NaN or Inf"
 
         # Pred and target boxes must be Tensor
-        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor, got {type(pred_boxes)}"
-        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor, got {type(target_boxes)}"
-
-        # The type of pred and target must be float tensor
-        assert pred_boxes.dtype.is_floating_point, f"pred_boxes must be a float tensor, got {pred_boxes.dtype}"
-        assert target_boxes.dtype.is_floating_point, f"target_boxes must be a float tensor, got {target_boxes.dtype}"
+        assert isinstance(pred_boxes, torch.cuda.FloatTensor), f"pred_boxes must be a torch.cuda.FloatTensor type, got {type(pred_boxes)}"
+        assert isinstance(target_boxes, torch.cuda.FloatTensor), f"target_boxes must be a torch.cuda.FloatTensor type, got {type(target_boxes)}"
 
         # Pred and target boxes must have the same shape
-        assert pred_boxes.shape == target_boxes.shape, (
-            f"pred_boxes and target_boxes must have the same shape, "
-            f"got pred_boxes.shape={pred_boxes.shape}, target_boxes.shape={target_boxes.shape}"
-        )
+        assert len(pred_boxes) == len(target_boxes), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
 
-        
-        # Convert to corner format
         pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
         target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
-        
-        # Intersection area
-        inter_x1 = torch.max(pred_x1, target_x1)
-        inter_y1 = torch.max(pred_y1, target_y1)
-        inter_x2 = torch.min(pred_x2, target_x2)
-        inter_y2 = torch.min(pred_y2, target_y2)
-        
+
+        # Intersection
+        inter_x1, inter_y1 = torch.max(pred_x1, target_x1), torch.max(pred_y1, target_y1)
+        inter_x2, inter_y2 = torch.min(pred_x2, target_x2), torch.min(pred_y2, target_y2)
         inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
-        
-        # Union area
-        pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
-        target_area = (target_x2 - target_x1) * (target_y2 - target_y1)
+
+        # Union
+        pred_area = torch.clamp(pred_x2 - pred_x1, min=0) * torch.clamp(pred_y2 - pred_y1, min=0)
+        target_area = torch.clamp(target_x2 - target_x1, min=0) * torch.clamp(target_y2 - target_y1, min=0)
         union_area = pred_area + target_area - inter_area
-        
-        # IoU
         iou = inter_area / torch.clamp(union_area, min=1e-6)
-        
-        # Enclosing box
-        enclose_x1 = torch.min(pred_x1, target_x1)
-        enclose_y1 = torch.min(pred_y1, target_y1)
-        enclose_x2 = torch.max(pred_x2, target_x2)
-        enclose_y2 = torch.max(pred_y2, target_y2)
-        
-        enclose_w = enclose_x2 - enclose_x1
-        enclose_h = enclose_y2 - enclose_y1
-        enclose_c2 = enclose_w ** 2 + enclose_h ** 2
-        
-        # Center distance
-        pred_cx = (pred_x1 + pred_x2) / 2
-        pred_cy = (pred_y1 + pred_y2) / 2
-        target_cx = (target_x1 + target_x2) / 2
-        target_cy = (target_y1 + target_y2) / 2
-        
-        rho2 = (pred_cx - target_cx) ** 2 + (pred_cy - target_cy) ** 2
+
+
+        # Enclosing box 
+        enclosed_x1, enclosed_y1 = torch.min(pred_x1, target_x1), torch.min(pred_y1, target_y1)
+        enclosed_x2, enclosed_y2 = torch.max(pred_x2, target_x2), torch.max(pred_y2, target_y2)
+        enclosed_w = enclosed_x2 - enclosed_x1
+        enclosed_h = enclosed_y2 - enclosed_y1
+        enclosed_2 = enclosed_w**2 + enclosed_h**2 
+
+        # Center distance 
+        pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
+        target_center_x, target_center_y = (target_x1 + target_x2) / 2, (target_y1 + target_y2) / 2
+        dist_center_2 = (pred_center_x - target_center_x)**2 + (pred_center_y - target_center_y)**2
         
         # Aspect ratio consistency
         pred_w = pred_x2 - pred_x1
@@ -392,89 +375,110 @@ class YoloOneLoss(nn.Module):
         alpha = v / torch.clamp(1 - iou + v, min=1e-6)
         
         # CIoU Loss
-        ciou = iou - rho2 / torch.clamp(enclose_c2, min=1e-6) - alpha * v
+        ciou_loss = 1- iou + dist_center_2 / enclosed_2 + alpha * v
 
+        # Focal 
         if self.focal_loss:
-            ciou_loss= (iou**self.focal_gamma)*(1 - ciou)
+            ciou_loss= (iou**self.focal_gamma)*(ciou_loss)
+
+        # Mask invalid boxes (sum==0)
+        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
+
+        if valid_mask.any():
+            ciou_loss = ciou_loss[valid_mask].mean()
         else:
-            ciou_loss = 1 - ciou
-        #ciou_loss = torch.nan_to_num(ciou_loss, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        return ciou_loss.mean()
+            ciou_loss = torch.tensor(0., device=pred_boxes.device)
+
+        return ciou_loss
+
     
     def _eiou_loss(
                     self,
                     pred_boxes: torch.Tensor, 
                     target_boxes: torch.Tensor, 
+                    width_img: int = 640,
+                    height_img: int = 640,
                     )-> torch.Tensor:
         
         """Efficient IoU loss implementation for anchor-free"""
         
         # Pred and target boxes do not contain None 
         assert pred_boxes is not None, "pred_boxes must not be None"
-        assert target_boxes is not None, "target_boxes must not be None"
+        assert target_boxes is not None, "target_boxes must not be None" 
 
-        # Pred and target boxes do not contain NaN or Inf 
-        assert torch.isfinite(pred_boxes).all(), "pred_boxes contains NaN or Inf"
-        assert torch.isfinite(target_boxes).all(), "target_boxes contains NaN or Inf"
 
         # Pred and target boxes must be Tensor
-        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor, got {type(pred_boxes)}"
-        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor, got {type(target_boxes)}"
-
-        # The type of pred and target must be float tensor
-        assert pred_boxes.dtype.is_floating_point, f"pred_boxes must be a float tensor, got {pred_boxes.dtype}"
-        assert target_boxes.dtype.is_floating_point, f"target_boxes must be a float tensor, got {target_boxes.dtype}"
+        assert isinstance(pred_boxes, torch.cuda.FloatTensor), f"pred_boxes must be a torch.cuda.FloatTensor type, got {type(pred_boxes)}"
+        assert isinstance(target_boxes, torch.cuda.FloatTensor), f"target_boxes must be a torch.cuda.FloatTensor type, got {type(target_boxes)}"
 
         # Pred and target boxes must have the same shape
-        assert pred_boxes.shape == target_boxes.shape, (
-            f"pred_boxes and target_boxes must have the same shape, "
-            f"got pred_boxes.shape={pred_boxes.shape}, target_boxes.shape={target_boxes.shape}"
-        )
+        assert len(pred_boxes) == len(target_boxes), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
 
-        
-        px1, py1, px2, py2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
-        tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
+        pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
+        target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
 
-        inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
-        inter_x2, inter_y2 = torch.min(px2, tx2), torch.min(py2, ty2)
+        # Intersection
+        inter_x1, inter_y1 = torch.max(pred_x1, target_x1), torch.max(pred_y1, target_y1)
+        inter_x2, inter_y2 = torch.min(pred_x2, target_x2), torch.min(pred_y2, target_y2)
         inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
 
-        pred_area = torch.clamp(px2 - px1, min=0) * torch.clamp(py2 - py1, min=0)
-        target_area = torch.clamp(tx2 - tx1, min=0) * torch.clamp(ty2 - ty1, min=0)
+        # Union
+        pred_area = torch.clamp(pred_x2 - pred_x1, min=0) * torch.clamp(pred_y2 - pred_y1, min=0)
+        target_area = torch.clamp(target_x2 - target_x1, min=0) * torch.clamp(target_y2 - target_y1, min=0)
         union_area = pred_area + target_area - inter_area
         iou = inter_area / torch.clamp(union_area, min=1e-6)
 
-        ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
-        ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
-        ew, eh = ex2 - ex1, ey2 - ey1
-        c2 = ew**2 + eh**2 
 
-        pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
-        tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
-        rho2 = (pcx - tcx)**2 + (pcy - tcy)**2
+        # Enclosing box 
+        enclosed_x1, enclosed_y1 = torch.min(pred_x1, target_x1), torch.min(pred_y1, target_y1)
+        enclosed_x2, enclosed_y2 = torch.max(pred_x2, target_x2), torch.max(pred_y2, target_y2)
+        enclosed_w = enclosed_x2 - enclosed_x1
+        enclosed_h = enclosed_y2 - enclosed_y1
+        enclosed_2 = enclosed_w**2 + enclosed_h**2 
 
-        pw, ph = px2 - px1, py2 - py1
-        tw, th = tx2 - tx1, ty2 - ty1
-        wc2, hc2 = ew**2, eh**2 
-        rho2_w = (pw - tw) ** 2
-        rho2_h = (ph - th) ** 2
+        # Center distance 
+        pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
+        target_center_x, target_center_y = (target_x1 + target_x2) / 2, (target_y1 + target_y2) / 2
+        dist_center_2 = (pred_center_x - target_center_x)**2 + (pred_center_y - target_center_y)**2
+
+
+        # Width/Height loss
+        pred_w, pred_h = pred_x2 - pred_x1, pred_y2 - pred_y1
+        target_w, target_h = target_x2 - target_x1, target_y2 - target_y1
+        # Fix box size : the box size practically does not exceed 99% of the entire image size
+        pred_w, pred_h = torch.clamp(pred_w, max=0.99*width_img), torch.clamp(pred_h, max=0.99*height_img)
+        target_w, target_h = torch.clamp(target_w, max=0.99*width_img), torch.clamp(target_h, max=0.99*height_img)
+        rho2_w = (pred_w - target_w) ** 2
+        rho2_h = (pred_h - target_h) ** 2
+        height_width_loss = (rho2_h / enclosed_h)  +  (rho2_w / enclosed_w)
 
 
         # EIoU Loss
-        eiou_loss = 1  - iou + rho2 / c2 + rho2_w / wc2 + rho2_h / hc2 
+        eiou_loss  =  1 - iou + dist_center_2 / enclosed_2  + height_width_loss
         
+        # Focal
         if self.focal_loss:
             eiou_loss = (iou**self.focal_gamma)*(eiou_loss)
 
+        # Mask invalid boxes (sum==0)
+        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
 
-        return eiou_loss.mean()
+        if valid_mask.any():
+            eiou_loss = eiou_loss[valid_mask].mean()
+        else:
+            eiou_loss = torch.tensor(0., device=pred_boxes.device)
+
+        return eiou_loss
+
     
 
     def _meiou_loss(
         self,
         pred_boxes: torch.Tensor,
         target_boxes: torch.Tensor,
+        width_img: int = 640,
+        height_img: int = 640,
+        
     ) -> torch.Tensor:
         
         """More efficient IoU loss implementation for anchor-free"""
@@ -483,188 +487,77 @@ class YoloOneLoss(nn.Module):
         assert pred_boxes is not None, "pred_boxes must not be None"
         assert target_boxes is not None, "target_boxes must not be None" 
 
-        # Pred and target boxes do not contain NaN or Inf 
-        assert torch.isfinite(pred_boxes).all(), "pred_boxes contains NaN or Inf"
-        assert torch.isfinite(target_boxes).all(), "target_boxes contains NaN or Inf"
 
         # Pred and target boxes must be Tensor
-        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor, got {type(pred_boxes)}"
-        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor, got {type(target_boxes)}"
-
-        # The type of pred and target must be float tensor
-        assert pred_boxes.dtype.is_floating_point, f"pred_boxes must be a float tensor, got {pred_boxes.dtype}"
-        assert target_boxes.dtype.is_floating_point, f"target_boxes must be a float tensor, got {target_boxes.dtype}"
+        assert isinstance(pred_boxes, torch.cuda.FloatTensor), f"pred_boxes must be a torch.cuda.FloatTensor type, got {type(pred_boxes)}"
+        assert isinstance(target_boxes, torch.cuda.FloatTensor), f"target_boxes must be a torch.cuda.FloatTensor type, got {type(target_boxes)}"
 
         # Pred and target boxes must have the same shape
-        assert pred_boxes.shape == target_boxes.shape, (
-            f"pred_boxes and target_boxes must have the same shape, "
-            f"got pred_boxes.shape={pred_boxes.shape}, target_boxes.shape={target_boxes.shape}"
-        )
-
+        assert len(pred_boxes) == len(target_boxes), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
 
         pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
         target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
 
+        # Intersection
         inter_x1, inter_y1 = torch.max(pred_x1, target_x1), torch.max(pred_y1, target_y1)
         inter_x2, inter_y2 = torch.min(pred_x2, target_x2), torch.min(pred_y2, target_y2)
         inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
 
+        # Union
         pred_area = torch.clamp(pred_x2 - pred_x1, min=0) * torch.clamp(pred_y2 - pred_y1, min=0)
         target_area = torch.clamp(target_x2 - target_x1, min=0) * torch.clamp(target_y2 - target_y1, min=0)
         union_area = pred_area + target_area - inter_area
         iou = inter_area / torch.clamp(union_area, min=1e-6)
 
+
+        # Enclosing box 
         enclosed_x1, enclosed_y1 = torch.min(pred_x1, target_x1), torch.min(pred_y1, target_y1)
         enclosed_x2, enclosed_y2 = torch.max(pred_x2, target_x2), torch.max(pred_y2, target_y2)
-        enclosed_w, enclosed_h = torch.abs(enclosed_x2 - enclosed_x1), torch.abs(enclosed_y2 - enclosed_y1)
+        enclosed_w = enclosed_x2 - enclosed_x1
+        enclosed_h = enclosed_y2 - enclosed_y1
         enclosed_2 = enclosed_w**2 + enclosed_h**2 
 
+        # Center distance 
         pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
         target_center_x, target_center_y = (target_x1 + target_x2) / 2, (target_y1 + target_y2) / 2
         dist_center_2 = (pred_center_x - target_center_x)**2 + (pred_center_y - target_center_y)**2
 
+
+        # Width/Height loss
         pred_w, pred_h = pred_x2 - pred_x1, pred_y2 - pred_y1
         target_w, target_h = target_x2 - target_x1, target_y2 - target_y1
-        #w_center_2, h_center_2 = enclosed_w, enclosed_h 
-        # Absolute shape cost
+        # Fix box size : the box size practically does not exceed 99% of the entire image size
+        pred_w, pred_h = torch.clamp(pred_w, max=0.99*width_img), torch.clamp(pred_h, max=0.99*height_img)
+        target_w, target_h = torch.clamp(target_w, max=0.99*width_img), torch.clamp(target_h, max=0.99*height_img)
         rho2_w = (pred_w - target_w) ** 2
-        rho2_h = (pred_h - target_h) ** 2
-        height_width_loss = rho2_w / enclosed_w  + rho2_h / enclosed_h
+        rho2_h = (pred_h - target_h) ** 2 
+        height_width_loss = (rho2_h / enclosed_h)  +  (rho2_w / enclosed_w)
 
         # Angle cost
-        #ch = torch.max(pred_center_y, target_center_y) - torch.min(pred_center_y, target_center_y)
-        ch = torch.abs(pred_center_y - target_center_y)
+        ch = torch.max(pred_center_y, target_center_y) - torch.min(pred_center_y, target_center_y)
         sigma = torch.sqrt(torch.abs(dist_center_2))
         delta_angle_loss = torch.where(sigma > 1e-6, 
                                        1 - 2 * torch.pow(torch.sin(torch.arcsin(ch / sigma) - torch.pi / 4), 2),
-                                         torch.zeros_like(sigma))
-    
-           
+                                        torch.zeros_like(sigma))
+
         # MEIoU Loss
-        eiou_loss  =  1 - iou + dist_center_2 / enclosed_2  + height_width_loss
+        eiou_loss  =  1 - iou + dist_center_2 / enclosed_2 + height_width_loss
         meiou_loss = eiou_loss + delta_angle_loss
 
+        # Focal
         if self.focal_loss:
             meiou_loss = (iou**self.focal_gamma)*(meiou_loss)
 
-        return meiou_loss.mean()
+        # Mask invalid boxes (sum==0)
+        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
 
-    
-
-    def _siou_loss(
-        self,
-        pred_boxes: torch.Tensor,
-        target_boxes: torch.Tensor,
-    ) -> torch.Tensor:
-        
-        """SIoU loss implementation for anchor-free"""
-
-        # Pred and target boxes do not contain None 
-        assert pred_boxes is not None, "pred_boxes must not be None"
-        assert target_boxes is not None, "target_boxes must not be None"
-
-        # Pred and target boxes do not contain NaN or Inf 
-        assert torch.isfinite(pred_boxes).all(), "pred_boxes contains NaN or Inf"
-        assert torch.isfinite(target_boxes).all(), "target_boxes contains NaN or Inf"
-
-        # Pred and target boxes must be Tensor
-        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor, got {type(pred_boxes)}"
-        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor, got {type(target_boxes)}"
-
-        # The type of pred and target must be float tensor
-        assert pred_boxes.dtype.is_floating_point, f"pred_boxes must be a float tensor, got {pred_boxes.dtype}"
-        assert target_boxes.dtype.is_floating_point, f"target_boxes must be a float tensor, got {target_boxes.dtype}"
-
-        # Pred and target boxes must have the same shape
-        assert pred_boxes.shape == target_boxes.shape, (
-            f"pred_boxes and target_boxes must have the same shape, "
-            f"got pred_boxes.shape={pred_boxes.shape}, target_boxes.shape={target_boxes.shape}"
-        )
-
-        
-        # IoU Cost
-        
-        px1, py1, px2, py2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
-        tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
-
-        inter_x1 = torch.max(px1, tx1)
-        inter_y1 = torch.max(py1, ty1)
-        inter_x2 = torch.min(px2, tx2)
-        inter_y2 = torch.min(py2, ty2)
-
-        inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
-        pred_area = torch.clamp(px2 - px1, min=0) * torch.clamp(py2 - py1, min=0)
-        target_area = torch.clamp(tx2 - tx1, min=0) * torch.clamp(ty2 - ty1, min=0)
-
-        union_area = pred_area + target_area - inter_area
-        iou = inter_area / torch.clamp(union_area, min=1e-6)
-
-        # Angle Cost
-
-        ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
-        ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
-        ew, eh = ex2 - ex1, ey2 - ey1
-        c2 = ew**2 + eh**2 
-
-        pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
-        tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
-        rho2 = (pcx - tcx)**2 + (pcy - tcy)**2
-
-        pw, ph = px2 - px1, py2 - py1
-        tw, th = tx2 - tx1, ty2 - ty1
-
-        # wc2, hc2 = ew**2, eh**2 
-        # rho2_w = (pw - tw) ** 2
-        # rho2_h = (ph - th) ** 2
-
-        sigma = torch.sqrt(rho2)
-        sin_alpha_1 = torch.abs(pcx - tcx) / torch.clamp(sigma, min=1e-6)
-        sin_alpha_2 = torch.abs(pcy - tcy) / torch.clamp(sigma, min=1e-6)
-        threshold = pow(2, 0.5) / 2
-        sin_alpha = torch.where(sin_alpha_1 > threshold, sin_alpha_2, sin_alpha_1)
-
-        #delta_angle = 1 - 2 * torch.pow(torch.sin(
-        #    torch.arcsin(ch / (sigma + 1e-6)) - torch.pi / 4), 2)
-
-        sin_angle = 2*torch.pow(torch.sin(
-            torch.arcsin(sin_alpha) - torch.pi / 4), 2)
-        delta_angle = 1 -  sin_angle
-        
-        delta_angle = torch.where(delta_angle<=1e-6, torch.tensor(0.0, dtype=delta_angle.dtype), delta_angle)
-
-        # Distance Cost
-        ch = torch.max(py2, ty2) - torch.min(py1, ty1)
-        cw = torch.max(px2, tx2) - torch.min(px1, tx1)
-
-        rho_x = ((pcx - tcx) / (cw + 1e-6)) ** 2
-        rho_y = ((pcy - tcy) / (ch + 1e-6)) ** 2
-        gamma = 2 - delta_angle
-        distance_cost = 2 - torch.exp(gamma * rho_x) - torch.exp(gamma * rho_y)
-
-        # Shape Cost
-        
-        pw, ph = px2 - px1, py2 - py1
-        tw, th = tx2 - tx1, ty2 - ty1
-
-
-        omiga_w = torch.abs(pw - tw) / (torch.max(pw, tw) + 1e-6)
-        omiga_h = torch.abs(ph - th) / (torch.max(ph, th) + 1e-6)
-
-        shape_cost = (
-            torch.pow(1 - torch.exp(-1 * omiga_w), self.theta) +
-            torch.pow(1 - torch.exp(-1 * omiga_h), self.theta)
-        )
-
-
-        # SIoU Loss
-        siou = iou - (distance_cost + shape_cost) / 2
-
-        if self.focal_loss:
-            siou_loss = (iou**self.focal_gamma)*(1 - siou)
+        if valid_mask.any():
+            meiou_loss = meiou_loss[valid_mask].mean()
         else:
-            siou_loss = 1 - siou
-        siou_loss = torch.nan_to_num(siou_loss, nan=0.0, posinf=0.0, neginf=0.0)
-        return siou_loss.mean()
+            meiou_loss = torch.tensor(0., device=pred_boxes.device)
+
+        return meiou_loss
+
 
 
     def _xywh_to_xyxy(self, boxes: torch.Tensor) -> Tuple[torch.Tensor, ...]:
