@@ -328,8 +328,8 @@ class YoloOneLoss(nn.Module):
 
 
         # Pred and target boxes must be Tensor
-        assert isinstance(pred_boxes, torch.cuda.FloatTensor), f"pred_boxes must be a torch.cuda.FloatTensor type, got {type(pred_boxes)}"
-        assert isinstance(target_boxes, torch.cuda.FloatTensor), f"target_boxes must be a torch.cuda.FloatTensor type, got {type(target_boxes)}"
+        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor type, got {type(pred_boxes)}"
+        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor type, got {type(target_boxes)}"
 
         # Pred and target boxes must have the same shape
         assert len(pred_boxes) == len(target_boxes), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
@@ -408,8 +408,8 @@ class YoloOneLoss(nn.Module):
 
 
         # Pred and target boxes must be Tensor
-        assert isinstance(pred_boxes, torch.cuda.FloatTensor), f"pred_boxes must be a torch.cuda.FloatTensor type, got {type(pred_boxes)}"
-        assert isinstance(target_boxes, torch.cuda.FloatTensor), f"target_boxes must be a torch.cuda.FloatTensor type, got {type(target_boxes)}"
+        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor type, got {type(pred_boxes)}"
+        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor type, got {type(target_boxes)}"
 
         # Pred and target boxes must have the same shape
         assert len(pred_boxes) == len(target_boxes), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
@@ -489,8 +489,8 @@ class YoloOneLoss(nn.Module):
 
 
         # Pred and target boxes must be Tensor
-        assert isinstance(pred_boxes, torch.cuda.FloatTensor), f"pred_boxes must be a torch.cuda.FloatTensor type, got {type(pred_boxes)}"
-        assert isinstance(target_boxes, torch.cuda.FloatTensor), f"target_boxes must be a torch.cuda.FloatTensor type, got {type(target_boxes)}"
+        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor type, got {type(pred_boxes)}"
+        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor type, got {type(target_boxes)}"
 
         # Pred and target boxes must have the same shape
         assert len(pred_boxes) == len(target_boxes), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
