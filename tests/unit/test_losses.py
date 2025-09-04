@@ -294,7 +294,27 @@ class TestBoxLoss(unittest.TestCase):
             loss = loss_fn(pred_box, target_box)
             loss.backward()
             self.assertIsNotNone(pred_box.grad, f"{name}: backward failed")
-            self.assertTrue(torch.isfinite(pred_box.grad).all(), f"{name} gradient must be finite")     
+            self.assertTrue(torch.isfinite(pred_box.grad).all(), f"{name} gradient must be finite")
+
+    def test_device_and_dtype_support(self):
+
+        "Test Loss for device and dtypes"
+      
+        pred_box = torch.tensor([3.0, 3.0, 1.0, 1.0], dtype=torch.float32, device=self.device)
+        target_box = torch.tensor([1.0, 1.0, 2.0, 2.0], dtype=torch.float32, device=self.device)
+
+        devices = ["cpu"]
+        if torch.cuda.is_available():
+            devices.append("cuda") 
+        dtypes = [torch.float32, torch.float16, torch.float64]
+        for name in self.loss_methods:
+            loss_fn = getattr(self.obj, name)
+            for device in devices:
+                for dtype in dtypes:
+                    b1 = pred_box.to(device=device, dtype=dtype)
+                    b2 = target_box.to(device=device, dtype=dtype)
+                    loss = loss_fn(b1, b2)
+                self.assertTrue(torch.isfinite(loss), f"{name} failed on device {device}/{dtype}")     
 
 
 
