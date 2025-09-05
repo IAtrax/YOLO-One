@@ -5,12 +5,12 @@ LICENSE: MIT
 
 YOLO-ONE LOSS MODULE - ANCHOR-FREE
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from yolo_one.utils.general import box_cxcywh_to_xyxy
 from typing import List, Tuple, Dict, Optional
+
 
 class YoloOneLoss(nn.Module):
     """
@@ -28,7 +28,9 @@ class YoloOneLoss(nn.Module):
         focal_gamma: float = 1.5,
         iou_type: str = 'meiou',
         label_smoothing: float = 0.0,
-        p5_weight_boost: float = 1.2
+        p5_weight_boost: float = 1.2,
+        theta: int = 4,
+        focal_loss: bool= False
     ):
         super().__init__()
         
@@ -41,6 +43,8 @@ class YoloOneLoss(nn.Module):
         self.iou_type = iou_type
         self.label_smoothing = label_smoothing
         self.p5_weight_boost = p5_weight_boost
+        self.theta = theta
+        self.focal_loss = focal_loss
         
         self.bce_loss = nn.BCEWithLogitsLoss(reduction='none')
         self.mse_loss = nn.MSELoss(reduction='none')
@@ -63,13 +67,13 @@ class YoloOneLoss(nn.Module):
             Dictionary with loss components
         """
         
-        device = predictions['detections'][0].device
+        device = predictions['preds'][0].device
         
         # Initialize losses
         loss_box = torch.zeros(1, device=device)
         loss_obj = torch.zeros(1, device=device)
-        loss_aspect = torch.zeros(1, device=device)
-        loss_shape_conf = torch.zeros(1, device=device)
+        # loss_aspect = torch.zeros(1, device=device)
+        # loss_shape_conf = torch.zeros(1, device=device)
         
         # Scale information
         scales = [
@@ -81,9 +85,9 @@ class YoloOneLoss(nn.Module):
         # Process each scale
         for scale_idx, scale_info in enumerate(scales):
             
-            detections = predictions['detections'][scale_idx]
-            aspects = predictions['aspects'][scale_idx]
-            shape_confs = predictions['shape_confidences'][scale_idx]
+            detections = predictions['preds'][scale_idx]
+            # aspects = predictions['aspects'][scale_idx]
+            # shape_confs = predictions['shape_confidences'][scale_idx]
             
             batch_size, _, height, width = detections.shape
             
@@ -95,8 +99,8 @@ class YoloOneLoss(nn.Module):
             # Extract predictions
             pred_boxes = detections[:, :4]  # [B, 4, H, W]
             pred_conf = detections[:, 4]    # [B, H, W]
-            pred_aspects = aspects[:, 0]    # [B, H, W]
-            pred_shape_conf = shape_confs[:, 0]  # [B, H, W]
+            # pred_aspects = aspects[:, 0]    # [B, H, W]
+            # pred_shape_conf = shape_confs[:, 0]  # [B, H, W]
             
             # Extract targets
             target_boxes = scale_targets[:, :, :, :4]  # [B, H, W, 4]
@@ -128,28 +132,28 @@ class YoloOneLoss(nn.Module):
             loss_obj += obj_loss * self.obj_weight
             
             # Aspect ratio loss
-            if aspect_targets is not None and box_mask.sum() > 0:
-                aspect_loss = self._compute_aspect_loss(
-                    pred_aspects[box_mask], aspect_targets[box_mask]
-                )
-                loss_aspect += aspect_loss * self.aspect_weight
+            # if aspect_targets is not None and box_mask.sum() > 0:
+            #     aspect_loss = self._compute_aspect_loss(
+            #         pred_aspects[box_mask], aspect_targets[box_mask]
+            #     )
+            #     loss_aspect += aspect_loss * self.aspect_weight
             
-            # Shape confidence loss
-            shape_conf_targets = obj_mask.float()
-            shape_conf_loss = self._compute_shape_confidence_loss(
-                pred_shape_conf, shape_conf_targets
-            )
-            loss_shape_conf += shape_conf_loss * self.shape_conf_weight
+            # # Shape confidence loss
+            # shape_conf_targets = obj_mask.float()
+            # shape_conf_loss = self._compute_shape_confidence_loss(
+            #     pred_shape_conf, shape_conf_targets
+            # )
+            # loss_shape_conf += shape_conf_loss * self.shape_conf_weight
         
         # Total loss
-        total_loss = loss_box + loss_obj + loss_shape_conf #+ loss_aspect 
+        total_loss = loss_box + loss_obj #+ loss_shape_conf #+ loss_aspect 
         
         return {
             'total_loss': total_loss,
             'box_loss': loss_box,
             'obj_loss': loss_obj,
-            'aspect_loss': loss_aspect,
-            'shape_conf_loss': loss_shape_conf,
+            # 'aspect_loss': loss_aspect,
+            # 'shape_conf_loss': loss_shape_conf,
             'avg_loss': total_loss.item()
         }
     
@@ -242,11 +246,16 @@ class YoloOneLoss(nn.Module):
             target_boxes_abs = torch.cat([target_xy, target_wh], dim=-1)
             
             loss = self._eiou_loss(pred_boxes_abs, target_boxes_abs)
+        elif self.iou_type == 'siou':
+            pred_boxes_abs = torch.cat([pred_xy, torch.exp(pred_wh)], dim=-1)
+            target_boxes_abs = torch.cat([target_xy, target_wh], dim=-1)
+            
+            loss = self._siou_loss(pred_boxes_abs, target_boxes_abs)
         else:
             # MSE fallback
             loss = F.mse_loss(pred_xy, target_xy) + F.mse_loss(pred_wh, target_wh)
         
-        return loss.mean()
+        return loss
     
     def _compute_aspect_loss(
         self,
@@ -279,6 +288,7 @@ class YoloOneLoss(nn.Module):
         target_conf: torch.Tensor, 
         obj_mask: torch.Tensor
     ) -> torch.Tensor:
+        
         """Objectness loss with focal loss for single-class"""
         
         # Label smoothing if specified
@@ -304,46 +314,52 @@ class YoloOneLoss(nn.Module):
         
         return pos_loss + 0.05 * neg_loss
     
-    def _ciou_loss(self, pred_boxes: torch.Tensor, target_boxes: torch.Tensor) -> torch.Tensor:
+    def _ciou_loss(
+            self,
+            pred_boxes: torch.Tensor,
+            target_boxes: torch.Tensor
+            ) -> torch.Tensor:
+
         """Complete IoU loss implementation for anchor-free"""
         
-        # Convert to corner format
+        # Pred and target boxes do not contain None 
+        assert pred_boxes is not None, "pred_boxes must not be None"
+        assert target_boxes is not None, "target_boxes must not be None" 
+
+
+        # Pred and target boxes must be Tensor
+        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor type, got {type(pred_boxes)}"
+        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor type, got {type(target_boxes)}"
+
+        # Pred and target boxes must have the same shape
+        assert len(pred_boxes) == len(target_boxes), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
+
         pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
         target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
-        
-        # Intersection area
-        inter_x1 = torch.max(pred_x1, target_x1)
-        inter_y1 = torch.max(pred_y1, target_y1)
-        inter_x2 = torch.min(pred_x2, target_x2)
-        inter_y2 = torch.min(pred_y2, target_y2)
-        
+
+        # Intersection
+        inter_x1, inter_y1 = torch.max(pred_x1, target_x1), torch.max(pred_y1, target_y1)
+        inter_x2, inter_y2 = torch.min(pred_x2, target_x2), torch.min(pred_y2, target_y2)
         inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
-        
-        # Union area
-        pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
-        target_area = (target_x2 - target_x1) * (target_y2 - target_y1)
+
+        # Union
+        pred_area = torch.clamp(pred_x2 - pred_x1, min=0) * torch.clamp(pred_y2 - pred_y1, min=0)
+        target_area = torch.clamp(target_x2 - target_x1, min=0) * torch.clamp(target_y2 - target_y1, min=0)
         union_area = pred_area + target_area - inter_area
-        
-        # IoU
         iou = inter_area / torch.clamp(union_area, min=1e-6)
-        
-        # Enclosing box
-        enclose_x1 = torch.min(pred_x1, target_x1)
-        enclose_y1 = torch.min(pred_y1, target_y1)
-        enclose_x2 = torch.max(pred_x2, target_x2)
-        enclose_y2 = torch.max(pred_y2, target_y2)
-        
-        enclose_w = enclose_x2 - enclose_x1
-        enclose_h = enclose_y2 - enclose_y1
-        enclose_c2 = enclose_w ** 2 + enclose_h ** 2
-        
-        # Center distance
-        pred_cx = (pred_x1 + pred_x2) / 2
-        pred_cy = (pred_y1 + pred_y2) / 2
-        target_cx = (target_x1 + target_x2) / 2
-        target_cy = (target_y1 + target_y2) / 2
-        
-        rho2 = (pred_cx - target_cx) ** 2 + (pred_cy - target_cy) ** 2
+
+
+        # Enclosing box 
+        enclosed_x1, enclosed_y1 = torch.min(pred_x1, target_x1), torch.min(pred_y1, target_y1)
+        enclosed_x2, enclosed_y2 = torch.max(pred_x2, target_x2), torch.max(pred_y2, target_y2)
+        enclosed_w = enclosed_x2 - enclosed_x1
+        enclosed_h = enclosed_y2 - enclosed_y1
+        enclosed_2 = enclosed_w**2 + enclosed_h**2 
+
+        # Center distance 
+        pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
+        target_center_x, target_center_y = (target_x1 + target_x2) / 2, (target_y1 + target_y2) / 2
+        dist_center_2 = (pred_center_x - target_center_x)**2 + (pred_center_y - target_center_y)**2
         
         # Aspect ratio consistency
         pred_w = pred_x2 - pred_x1
@@ -358,101 +374,201 @@ class YoloOneLoss(nn.Module):
         
         alpha = v / torch.clamp(1 - iou + v, min=1e-6)
         
-        # CIoU
-        ciou = iou - rho2 / torch.clamp(enclose_c2, min=1e-6) - alpha * v
-        
-        return 1 - ciou
+        # CIoU Loss
+        ciou_loss = 1- iou + (dist_center_2 / enclosed_2) + alpha * v
+
+        # Focal 
+        if self.focal_loss:
+            ciou_loss= (iou**self.focal_gamma)*(ciou_loss)
+
+        # Mask invalid boxes (sum==0)
+        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
+
+        if valid_mask.any():
+            ciou_loss = ciou_loss[valid_mask].mean()
+        else:
+            ciou_loss = torch.tensor(0., device=pred_boxes.device)
+
+        return ciou_loss
+
     
     def _eiou_loss(
                     self,
                     pred_boxes: torch.Tensor, 
                     target_boxes: torch.Tensor, 
+                    width_img: int = 640,
+                    height_img: int = 640,
                     )-> torch.Tensor:
         
-        px1, py1, px2, py2 = self._xywh_to_xyxy(pred_boxes)
-        tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
+        """Efficient IoU loss implementation for anchor-free"""
+        
+        # Pred and target boxes do not contain None 
+        assert pred_boxes is not None, "pred_boxes must not be None"
+        assert target_boxes is not None, "target_boxes must not be None" 
 
-        inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
-        inter_x2, inter_y2 = torch.min(px2, tx2), torch.min(py2, ty2)
+
+        # Pred and target boxes must be Tensor
+        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor type, got {type(pred_boxes)}"
+        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor type, got {type(target_boxes)}"
+
+        # Pred and target boxes must have the same shape
+        assert len(pred_boxes) == len(target_boxes), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
+
+        pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
+        target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
+
+        # Intersection
+        inter_x1, inter_y1 = torch.max(pred_x1, target_x1), torch.max(pred_y1, target_y1)
+        inter_x2, inter_y2 = torch.min(pred_x2, target_x2), torch.min(pred_y2, target_y2)
         inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
 
-        pred_area = torch.clamp(px2 - px1, min=0) * torch.clamp(py2 - py1, min=0)
-        target_area = torch.clamp(tx2 - tx1, min=0) * torch.clamp(ty2 - ty1, min=0)
+        # Union
+        pred_area = torch.clamp(pred_x2 - pred_x1, min=0) * torch.clamp(pred_y2 - pred_y1, min=0)
+        target_area = torch.clamp(target_x2 - target_x1, min=0) * torch.clamp(target_y2 - target_y1, min=0)
         union_area = pred_area + target_area - inter_area
-        iou = inter_area / (union_area + 1e-6)
+        iou = inter_area / torch.clamp(union_area, min=1e-6)
 
-        ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
-        ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
-        ew, eh = ex2 - ex1, ey2 - ey1
-        c2 = ew**2 + eh**2 
 
-        pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
-        tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
-        rho2 = (pcx - tcx)**2 + (pcy - tcy)**2
+        # Enclosing box 
+        enclosed_x1, enclosed_y1 = torch.min(pred_x1, target_x1), torch.min(pred_y1, target_y1)
+        enclosed_x2, enclosed_y2 = torch.max(pred_x2, target_x2), torch.max(pred_y2, target_y2)
+        enclosed_w = enclosed_x2 - enclosed_x1
+        enclosed_h = enclosed_y2 - enclosed_y1
+        enclosed_2 = enclosed_w**2 + enclosed_h**2 
 
-        pw, ph = px2 - px1, py2 - py1
-        tw, th = tx2 - tx1, ty2 - ty1
-        wc2, hc2 = ew**2, eh**2 
-        rho2_w = (pw - tw) ** 2
-        rho2_h = (ph - th) ** 2
+        # Center distance 
+        pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
+        target_center_x, target_center_y = (target_x1 + target_x2) / 2, (target_y1 + target_y2) / 2
+        dist_center_2 = (pred_center_x - target_center_x)**2 + (pred_center_y - target_center_y)**2
 
-        eiou = iou - rho2 / (c2+ 1e-6) - rho2_w / (wc2 + 1e-6) - rho2_h / (hc2 + 1e-6)
-        return (iou**self.focal_gamma)*(1 - eiou)
+
+        # Width/Height loss
+        pred_w, pred_h = pred_x2 - pred_x1, pred_y2 - pred_y1
+        target_w, target_h = target_x2 - target_x1, target_y2 - target_y1
+        # Fix box size : the box size practically does not exceed 99% of the entire image size
+        pred_w, pred_h = torch.clamp(pred_w, max=0.99*width_img), torch.clamp(pred_h, max=0.99*height_img)
+        target_w, target_h = torch.clamp(target_w, max=0.99*width_img), torch.clamp(target_h, max=0.99*height_img)
+        rho2_w = (pred_w - target_w) ** 2
+        rho2_h = (pred_h - target_h) ** 2
+        height_width_loss = (rho2_h / enclosed_h)  +  (rho2_w / enclosed_w)
+
+
+        # EIoU Loss
+        eiou_loss  =  1 - iou + (dist_center_2 / enclosed_2)  + height_width_loss
+        
+        # Focal
+        if self.focal_loss:
+            eiou_loss = (iou**self.focal_gamma)*(eiou_loss)
+
+        # Mask invalid boxes (sum==0)
+        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
+
+        if valid_mask.any():
+            eiou_loss = eiou_loss[valid_mask].mean()
+        else:
+            eiou_loss = torch.tensor(0., device=pred_boxes.device)
+
+        return eiou_loss
+
+    
 
     def _meiou_loss(
-                    self,
-                    pred_boxes: torch.Tensor, 
-                    target_boxes: torch.Tensor, 
-                    lambda1: float =0.3, 
-                    lambda2: float =0.5, 
-                    lambda3: float = 0.2
-                    )-> torch.Tensor:
+        self,
+        pred_boxes: torch.Tensor,
+        target_boxes: torch.Tensor,
+        width_img: int = 640,
+        height_img: int = 640,
         
+    ) -> torch.Tensor:
+        
+        """More efficient IoU loss implementation for anchor-free"""
 
-        px1, py1, px2, py2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
-        tx1, ty1, tx2, ty2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
-        
-        inter_x1, inter_y1 = torch.max(px1, tx1), torch.max(py1, ty1)
-        inter_x2, inter_y2 = torch.min(px2, tx2), torch.min(py2, ty2)
+        # Pred and target boxes do not contain None 
+        assert pred_boxes is not None, "pred_boxes must not be None"
+        assert target_boxes is not None, "target_boxes must not be None" 
+
+
+        # Pred and target boxes must be Tensor
+        assert isinstance(pred_boxes, torch.Tensor), f"pred_boxes must be a torch.Tensor type, got {type(pred_boxes)}"
+        assert isinstance(target_boxes, torch.Tensor), f"target_boxes must be a torch.Tensor type, got {type(target_boxes)}"
+
+        # Pred and target boxes must have the same shape
+        assert len(pred_boxes) == len(target_boxes), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
+
+        pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
+        target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(target_boxes).unbind(-1)
+
+        # Intersection
+        inter_x1, inter_y1 = torch.max(pred_x1, target_x1), torch.max(pred_y1, target_y1)
+        inter_x2, inter_y2 = torch.min(pred_x2, target_x2), torch.min(pred_y2, target_y2)
         inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
 
-        pred_area = torch.clamp(px2 - px1, min=0) * torch.clamp(py2 - py1, min=0)
-        target_area = torch.clamp(tx2 - tx1, min=0) * torch.clamp(ty2 - ty1, min=0)
+        # Union
+        pred_area = torch.clamp(pred_x2 - pred_x1, min=0) * torch.clamp(pred_y2 - pred_y1, min=0)
+        target_area = torch.clamp(target_x2 - target_x1, min=0) * torch.clamp(target_y2 - target_y1, min=0)
         union_area = pred_area + target_area - inter_area
-        iou = inter_area / (union_area + 1e-6)
+        iou = inter_area / torch.clamp(union_area, min=1e-6)
 
-        ex1, ey1 = torch.min(px1, tx1), torch.min(py1, ty1)
-        ex2, ey2 = torch.max(px2, tx2), torch.max(py2, ty2)
-        ew, eh = ex2 - ex1, ey2 - ey1
-        c2 = ew**2 + eh**2 
-        
-        wc2, hc2 = ew**2, eh**2 
-        rho2_w = (pw - tw) ** 2
-        rho2_h = (ph - th) ** 2
 
-        pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
-        tcx, tcy = (tx1 + tx2) / 2, (ty1 + ty2) / 2
-        rho2_center = (pcx - tcx)**2 + (pcy - tcy)**2
+        # Enclosing box 
+        enclosed_x1, enclosed_y1 = torch.min(pred_x1, target_x1), torch.min(pred_y1, target_y1)
+        enclosed_x2, enclosed_y2 = torch.max(pred_x2, target_x2), torch.max(pred_y2, target_y2)
+        enclosed_w = enclosed_x2 - enclosed_x1
+        enclosed_h = enclosed_y2 - enclosed_y1
+        enclosed_2 = enclosed_w**2 + enclosed_h**2 
 
-        pw, ph = px2 - px1, py2 - py1
-        tw, th = tx2 - tx1, ty2 - ty1
+        # Center distance 
+        pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
+        target_center_x, target_center_y = (target_x1 + target_x2) / 2, (target_y1 + target_y2) / 2
+        dist_center_2 = (pred_center_x - target_center_x)**2 + (pred_center_y - target_center_y)**2
 
-        #v_aspect = (4 / (torch.pi**2)) * (torch.atan(tw / th) - torch.atan(pw / ph))**2
-        v_absolute =  rho2_w / (wc2 + 1e-6) + rho2_h / (hc2 + 1e-6)
-        #v_absolute = ((ph - th)**2 + (pw - tw)**2) / (c2+ 1e-6)
-        
-        ch = torch.max(ph, th) / 2
-        sigma = torch.sqrt(ew**2 + eh**2)
-        delta_angle = 1 - 2 * torch.sin(torch.arcsin(torch.clamp(ch / (sigma + 1e-6), -1.0, 1.0)) - (torch.pi / 4))**2
 
-        #v_co = lambda1 * v_aspect + lambda2 * v_absolute + lambda3 * delta_angle
-        #alpha = v_co / ((1 - iou) + v_co + 1e-6)
+        # Width/Height loss
+        pred_w, pred_h = pred_x2 - pred_x1, pred_y2 - pred_y1
+        target_w, target_h = target_x2 - target_x1, target_y2 - target_y1
+        # Fix box size : the box size practically does not exceed 99% of the entire image size
+        pred_w, pred_h = torch.clamp(pred_w, max=0.99*width_img), torch.clamp(pred_h, max=0.99*height_img)
+        target_w, target_h = torch.clamp(target_w, max=0.99*width_img), torch.clamp(target_h, max=0.99*height_img)
+        rho2_w = (pred_w - target_w) ** 2
+        rho2_h = (pred_h - target_h) ** 2 
+        height_width_loss = (rho2_h / enclosed_h)  +  (rho2_w / enclosed_w)
 
-        meiou = iou - rho2_center / c2 - v_absolute - delta_angle #- 0.2 * delta_angle
+        # Angle cost
+        ch = torch.max(pred_center_y, target_center_y) - torch.min(pred_center_y, target_center_y)
+        sigma = torch.sqrt(torch.abs(dist_center_2))
+        delta_angle_loss = torch.where(sigma > 1e-6, 
+                                       1 - 2 * torch.pow(torch.sin(torch.arcsin(ch / sigma) - torch.pi / 4), 2),
+                                        torch.zeros_like(sigma))
 
-        return (iou**self.focal_gamma)*(1 - meiou)
-    
-    
+        # MEIoU Loss
+        eiou_loss  =  1 - iou + (dist_center_2 / enclosed_2) + height_width_loss
+        meiou_loss = eiou_loss + delta_angle_loss
+
+        # Focal
+        if self.focal_loss:
+            meiou_loss = (iou**self.focal_gamma)*(meiou_loss)
+
+        # Mask invalid boxes (sum==0)
+        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
+
+        if valid_mask.any():
+            meiou_loss = meiou_loss[valid_mask].mean()
+        else:
+            meiou_loss = torch.tensor(0., device=pred_boxes.device)
+
+        return meiou_loss
+
+
+
+    def _xywh_to_xyxy(self, boxes: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        """Convert center format to corner format"""
+        x, y, w, h = boxes.unbind(-1)
+        x1 = x - w / 2
+        y1 = y - h / 2
+        x2 = x + w / 2
+        y2 = y + h / 2
+        return x1, y1, x2, y2
+
 
 def create_yolo_one_loss(
     box_weight: float = 7.5,
@@ -463,7 +579,9 @@ def create_yolo_one_loss(
     focal_gamma: float = 1.5,
     iou_type: str = 'meiou',
     label_smoothing: float = 0.0,
-    p5_weight_boost: float = 1.2
+    p5_weight_boost: float = 1.2,
+    theta: int = 4,
+    focal_loss: bool= False
 ) -> YoloOneLoss:
     """Factory function to create anchor-free YOLO-One loss"""
     return YoloOneLoss(
@@ -475,5 +593,7 @@ def create_yolo_one_loss(
         focal_gamma=focal_gamma,
         iou_type=iou_type,
         label_smoothing=label_smoothing,
-        p5_weight_boost=p5_weight_boost
+        p5_weight_boost=p5_weight_boost,
+        theta = theta,
+        focal_loss=focal_loss
     )
