@@ -88,10 +88,8 @@ class YoloOneLoss(nn.Module):
             batch_size, _, height, width = detections.shape
 
             # Build targets for current scale
-            scale_targets, obj_mask, box_mask = (
-                self._build_anchor_free_targets(
-                    targets, (batch_size, height, width)
-                )
+            scale_targets, obj_mask, box_mask = self._build_anchor_free_targets(
+                targets, (batch_size, height, width)
             )
 
             # Extract predictions
@@ -140,7 +138,9 @@ class YoloOneLoss(nn.Module):
         }
 
     def _build_anchor_free_targets(
-        self, targets: torch.Tensor, grid_shape: Tuple[int, int, int],
+        self,
+        targets: torch.Tensor,
+        grid_shape: Tuple[int, int, int],
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Build targets for anchor-free detection
@@ -318,6 +318,11 @@ class YoloOneLoss(nn.Module):
             target_boxes, torch.Tensor
         ), f"target_boxes must be a torch.Tensor type, got {type(target_boxes)}"
 
+        # Pred and target boxes must have the same shape
+        assert len(pred_boxes) == len(
+            target_boxes
+        ), f"Length mismatch: len(pred_boxes)={len(pred_boxes)}, len(target_boxes)={len(target_boxes)}"
+
         pred_x1, pred_y1, pred_x2, pred_y2 = box_cxcywh_to_xyxy(pred_boxes).unbind(-1)
         target_x1, target_y1, target_x2, target_y2 = box_cxcywh_to_xyxy(
             target_boxes
@@ -358,9 +363,11 @@ class YoloOneLoss(nn.Module):
         # Center distance
         pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
         target_center_x, target_center_y = (target_x1 + target_x2) / 2, (
-            target_y1 + target_y2) / 2
+            target_y1 + target_y2
+        ) / 2
         dist_center_2 = (pred_center_x - target_center_x) ** 2 + (
-            pred_center_y - target_center_y) ** 2
+            pred_center_y - target_center_y
+        ) ** 2
 
         # Aspect ratio consistency
         pred_w = pred_x2 - pred_x1
@@ -370,7 +377,8 @@ class YoloOneLoss(nn.Module):
 
         v = (4 / (torch.pi**2)) * torch.pow(
             torch.atan(target_w / torch.clamp(target_h, min=1e-6))
-            - torch.atan(pred_w / torch.clamp(pred_h, min=1e-6)), 2,
+            - torch.atan(pred_w / torch.clamp(pred_h, min=1e-6)),
+            2,
         )
 
         alpha = v / torch.clamp(1 - iou + v, min=1e-6)
@@ -382,15 +390,7 @@ class YoloOneLoss(nn.Module):
         if self.focal_loss:
             ciou_loss = (iou**self.focal_gamma) * (ciou_loss)
 
-        # Mask invalid boxes (sum==0)
-        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
-
-        if valid_mask.any():
-            ciou_loss = ciou_loss[valid_mask].mean()
-        else:
-            ciou_loss = torch.tensor(0.0, device=pred_boxes.device)
-
-        return ciou_loss
+        return ciou_loss.mean()
 
     def _eiou_loss(
         self, pred_boxes: torch.Tensor, target_boxes: torch.Tensor
@@ -454,9 +454,11 @@ class YoloOneLoss(nn.Module):
         # Center distance
         pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
         target_center_x, target_center_y = (target_x1 + target_x2) / 2, (
-            target_y1 + target_y2) / 2
+            target_y1 + target_y2
+        ) / 2
         dist_center_2 = (pred_center_x - target_center_x) ** 2 + (
-            pred_center_y - target_center_y) ** 2
+            pred_center_y - target_center_y
+        ) ** 2
 
         # Width/Height loss
         pred_w, pred_h = pred_x2 - pred_x1, pred_y2 - pred_y1
@@ -472,15 +474,7 @@ class YoloOneLoss(nn.Module):
         if self.focal_loss:
             eiou_loss = (iou**self.focal_gamma) * (eiou_loss)
 
-        # Mask invalid boxes (sum==0)
-        valid_mask = (target_boxes.sum(-1) > 0) & (pred_boxes.sum(-1) > 0)
-
-        if valid_mask.any():
-            eiou_loss = eiou_loss[valid_mask].mean()
-        else:
-            eiou_loss = torch.tensor(0.0, device=pred_boxes.device)
-
-        return eiou_loss
+        return eiou_loss.mean()
 
     def _meiou_loss(
         self, pred_boxes: torch.Tensor, target_boxes: torch.Tensor
@@ -544,9 +538,11 @@ class YoloOneLoss(nn.Module):
         # Center distance
         pred_center_x, pred_center_y = (pred_x1 + pred_x2) / 2, (pred_y1 + pred_y2) / 2
         target_center_x, target_center_y = (target_x1 + target_x2) / 2, (
-            target_y1 + target_y2) / 2
+            target_y1 + target_y2
+        ) / 2
         dist_center_2 = (pred_center_x - target_center_x) ** 2 + (
-            pred_center_y - target_center_y) ** 2
+            pred_center_y - target_center_y
+        ) ** 2
 
         # Width/Height loss
         pred_w, pred_h = pred_x2 - pred_x1, pred_y2 - pred_y1
@@ -573,7 +569,7 @@ class YoloOneLoss(nn.Module):
         # Focal
         if self.focal_loss:
             meiou_loss = (iou**self.focal_gamma) * (meiou_loss)
-        
+
         return meiou_loss.mean()
 
     def _xywh_to_xyxy(self, boxes: torch.Tensor) -> Tuple[torch.Tensor, ...]:
