@@ -39,12 +39,6 @@ def profile_model(args):
                 print("❌ Error: 'ultralytics' package not found. Please run 'pip install ultralytics'")
                 return
             print("Loading standard YOLOv8 model from ultralytics...")
-            # .model gives us the underlying nn.Module
-            # NOTE: Profiling the raw YOLOv8 nn.Module like this is a "pure" test of the
-            # architecture's compatibility with standard PyTorch tools like torch.compile.
-            # The results may be slower than those reported by Ultralytics' own benchmark tools,
-            # which use a highly integrated and optimized full pipeline (not just the model).
-            # This comparison highlights the "compile-friendliness" of an architecture.
             model = YOLO(f'yolov8{args.model_size}.pt').model.to(device)
 
 

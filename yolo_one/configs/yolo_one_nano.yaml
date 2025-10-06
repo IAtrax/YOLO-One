@@ -7,19 +7,21 @@ model:
   use_moe: true
 
 training:
-  epochs: 100
-  batch_size: 8
+  epochs: 20
+  batch_size: 2
   accumulate_batches: 8
   mixed_precision: true
   compile_model: true
   use_ema: true
   ema_decay: 0.999
+  use_augmentation: true
+
 loss:
   box_weight: 7.5
   obj_weight: 1.0
   focal_alpha: 0.25
   focal_gamma: 1.5
-  iou_type: meiou
+  iou_type: iou
   label_smoothing: 0.0
   p5_weight_boost: 1.2
   moe_balance_weight: 0.001

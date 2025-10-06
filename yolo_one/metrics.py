@@ -88,7 +88,7 @@ class YoloOneMetrics:
                 preds_for_map.append({
                     'boxes': torch.empty((0, 4), device=self.device),
                     'scores': torch.empty((0,), device=self.device),
-                    'labels': torch.empty((0,), device=self.device, dtype=torch.int64)  # ✅ int64 pour les labels
+                    'labels': torch.empty((0,), device=self.device, dtype=torch.int64)  
                 })
             else:
                 # Scale prediction boxes from normalized [0,1] to pixel coordinates
@@ -101,21 +101,19 @@ class YoloOneMetrics:
                 preds_for_map.append({
                     'boxes': pred_boxes,  # [N, 4] in cxcywh pixel format
                     'scores': pred[:, 4],
-                    'labels': torch.zeros(pred.shape[0], device=self.device, dtype=torch.int64) # ✅ int64 pour labels
+                    'labels': torch.zeros(pred.shape[0], device=self.device, dtype=torch.int64)
                 })
 
             # Filter targets for the current image
             target = targets[targets[:, 0] == i]
             
             if target.shape[0] == 0:
-                # Pas de targets pour cette image
                 targets_for_map.append({
                     'boxes': torch.empty((0, 4), device=self.device),
                     'labels': torch.empty((0,), device=self.device, dtype=torch.int64)
                 })
             else:
-                # Clone and scale target boxes from normalized [0,1] to pixel coordinates
-                target_boxes = target[:, 2:].clone() # [M, 4] in cxcywh format
+                target_boxes = target[:, 1:].clone() # [M, 4] in cxcywh format
                 target_boxes[:, 0] *= w # scale cx
                 target_boxes[:, 1] *= h # scale cy
                 target_boxes[:, 2] *= w # scale w
@@ -123,7 +121,7 @@ class YoloOneMetrics:
                 
                 targets_for_map.append({
                     'boxes': target_boxes, # [M, 4] in cxcywh pixel format
-                    'labels': torch.zeros(target.shape[0], device=self.device, dtype=torch.int64) # ✅ int64 pour labels
+                    'labels': torch.zeros(target.shape[0], device=self.device, dtype=torch.int64)
                 })
         has_preds = any(len(p['boxes']) > 0 for p in preds_for_map)
         has_targets = any(len(t['boxes']) > 0 for t in targets_for_map)

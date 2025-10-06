@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from yolo_one.models.common import Conv
 
@@ -20,6 +19,12 @@ from yolo_one.models.common import Conv
 class Scale(nn.Module):
     """Learnable scalar (per level) to stabilize bbox regression magnitude."""
     def __init__(self, init_value: float = 1.0) -> None:
+        """
+        Initialize the learnable scalar for stabilizing bbox regression magnitude.
+
+        Args:
+            init_value (float, optional): Initial value of the learnable scalar. Defaults to 1.0.
+        """
         super().__init__()
         self.scale = nn.Parameter(torch.tensor(float(init_value)))
 

@@ -1,7 +1,7 @@
 """
 YOLO-One Dataset Preprocessing - Single-Class Selection
 Iatrax Team - 2025 - https://iatrax.com
-Bug fix: Added caching for dataset initialization to drastically reduce startup time.
+
 """
 
 import cv2
@@ -9,20 +9,20 @@ import torch
 import numpy as np
 import json
 from torch.utils.data import Dataset, DataLoader
-from typing import List, Tuple, Dict, Optional
+from typing import Any, List, Tuple, Dict, Optional
 import albumentations as A
 from pathlib import Path
 from collections import Counter
-import concurrent.futures
-
+from tqdm import tqdm
 class YoloOneDatasetAnalyzer:
     """
     Dataset analyzer for class detection and selection
     Core logic: 1 class = auto-continue, multiple classes = user selection
     """
-    def __init__(self, dataset_root: str):
+    def __init__(self, dataset_root: str, split: str = 'train'):
         self.dataset_root = Path(dataset_root)
         self.analysis_results = {}
+        self.split = split
 
     def analyze_and_select_class(self, target_class: Optional[int] = None) -> int:
         """
@@ -42,41 +42,34 @@ class YoloOneDatasetAnalyzer:
 
     def _scan_dataset_classes(self) -> Dict[int, int]:
         """Scan dataset and count classes across all splits"""
+
+        assert self.split in ['train', 'val', 'test'], "Invalid split"
         class_counts = Counter()
         total_files = 0
+        split_path = self.dataset_root / 'labels' / self.split
+        if not split_path.exists():
+            raise FileNotFoundError(f"Labels directory not found: {split_path}")     
+        print(f"Scanning {self.split} split...")
+        label_files = list(split_path.glob('*.txt'))
+        total_files += len(label_files)
 
-        # Scan train, val, test splits
-        for split in ['train', 'val', 'test']:
-            split_path = self.dataset_root / 'labels' / split
-
-            if not split_path.exists():
+        for label_file in label_files:
+            try:
+                with open(label_file, 'r') as f:
+                    lines = f.readlines()
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split()
+                    if len(parts) == 5:
+                        try:
+                            class_id = int(parts[0])
+                            class_counts[class_id] += 1
+                        except ValueError:
+                            continue            
+            except Exception:
                 continue
-
-            print(f"Scanning {split} split...")
-
-            label_files = list(split_path.glob('*.txt'))
-            total_files += len(label_files)
-
-            for label_file in label_files:
-                try:
-                    with open(label_file, 'r') as f:
-                        lines = f.readlines()
-
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            continue
-
-                        parts = line.split()
-                        if len(parts) == 5:
-                            try:
-                                class_id = int(parts[0])
-                                class_counts[class_id] += 1
-                            except ValueError:
-                                continue
-                except Exception:
-                    continue
-
         # Print scan results
         print(f"✅ Scanned {total_files} files")
         print(f"🏆 Found {len(class_counts)} unique classes: {sorted(class_counts.keys())}")
@@ -208,7 +201,7 @@ class YoloOneDataset(Dataset):
         print(f"📁 Dataset: {root_dir}")
 
         # CORE LOGIC: Analyze and select class
-        analyzer = YoloOneDatasetAnalyzer(root_dir)
+        analyzer = YoloOneDatasetAnalyzer(root_dir, split=split)
         self.target_class = analyzer.analyze_and_select_class(target_class)
 
         # Bug fix: use caching for dataset building
@@ -222,7 +215,7 @@ class YoloOneDataset(Dataset):
     def _build_dataset_with_caching(self):
         """
         Build dataset filtering for target class only, using a cache file.
-        This is the main performance fix.
+        Sequential version optimized for Colab.
         """
         print(f"\nBuilding dataset for class {self.target_class}...")
         
@@ -231,7 +224,7 @@ class YoloOneDataset(Dataset):
 
         # Check if cache file exists
         if cache_file.exists():
-            print(f"⏳ Loading dataset from cache: {cache_file}")
+            print(f"Loading dataset from cache: {cache_file}")
             try:
                 with open(cache_file, 'r') as f:
                     valid_samples = json.load(f)
@@ -241,12 +234,12 @@ class YoloOneDataset(Dataset):
                     sample['image_path'] = Path(sample['image_path'])
                     sample['label_path'] = Path(sample['label_path'])
                     
-                print("✅ Cache loaded successfully!")
+                print(f"Cache loaded successfully! Found {len(valid_samples)} samples")
                 return valid_samples
             except (IOError, json.JSONDecodeError) as e:
-                print(f"❌ Error loading cache file: {e}. Rebuilding dataset...")
+                print(f"Error loading cache file: {e}. Rebuilding dataset...")
 
-        print("👷 No valid cache found. Rebuilding dataset from scratch...")
+        print("No valid cache found. Building dataset from scratch...")
         
         # Get all image files
         image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
@@ -255,10 +248,26 @@ class YoloOneDataset(Dataset):
             image_files.extend(self.images_dir.glob(f'*{ext}'))
             image_files.extend(self.images_dir.glob(f'*{ext.upper()}'))
         image_files = sorted(image_files)
-        print(f"📂 Found {len(image_files)} total images")
+        print(f"Found {len(image_files)} total images")
 
-        # Function to process a single label file
-        def process_label_file(label_path, image_path):
+        # Process files sequentially
+        valid_samples = []
+        target_class_annotations = 0
+        processed_count = 0
+        iterator = tqdm(image_files, desc=f"Filtering class {self.target_class}")
+        
+        for img_path in iterator:
+            processed_count += 1
+            
+            # Show progress every 100 files if no tqdm
+            if processed_count % 100 == 0 and 'tqdm' not in locals():
+                print(f"Processed {processed_count}/{len(image_files)} files...")
+            
+            label_path = self.labels_dir / f"{img_path.stem}.txt"
+            
+            if not label_path.exists():
+                continue
+                
             try:
                 with open(label_path, 'r') as f:
                     lines = f.readlines()
@@ -268,59 +277,57 @@ class YoloOneDataset(Dataset):
                     line = line.strip()
                     if not line:
                         continue
+                        
                     parts = line.split()
-                    if len(parts) == 5:
+                    if len(parts) >= 5:  # YOLO format: class_id x y w h
                         try:
                             class_id = int(parts[0])
                             if class_id == self.target_class:
                                 class_annotations += 1
-                        except ValueError:
+                        except (ValueError, IndexError):
                             continue
                 
                 if class_annotations > 0:
-                    return {
-                        'image_path': str(image_path),  # Store as string for JSON
-                        'label_path': str(label_path),  # Store as string for JSON
+                    valid_samples.append({
+                        'image_path': img_path,
+                        'label_path': label_path,
                         'annotations': class_annotations
-                    }
-            except Exception:
-                pass
-            return None
-
-        # Filter for target class using multithreading for speed
-        valid_samples = []
-        target_class_annotations = 0
+                    })
+                    target_class_annotations += class_annotations
+                    
+            except Exception as e:
+                # Skip files that cannot be read
+                continue
         
-        # Create a list of (label_path, image_path) tuples
-        tasks = []
-        for img_path in image_files:
-            label_path = self.labels_dir / f"{img_path.stem}.txt"
-            if label_path.exists():
-                tasks.append((label_path, img_path))
+        # Save to cache if we found samples
+        if valid_samples:
+            print(f"Writing dataset to cache file: {cache_file}")
+            try:
+                # Ensure cache directory exists
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                with open(cache_file, 'w') as f:
+                    # Convert Path objects to strings for JSON serialization
+                    serializable_samples = []
+                    for sample in valid_samples:
+                        serializable_samples.append({
+                            'image_path': str(sample['image_path']),
+                            'label_path': str(sample['label_path']),
+                            'annotations': sample['annotations']
+                        })
+                    json.dump(serializable_samples, f, indent=2)
+                print("Cache file saved successfully!")
+            except Exception as e:
+                print(f"Warning: Could not save cache file: {e}")
+        else:
+            print(f"Warning: No samples found for class {self.target_class}")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_file = {executor.submit(process_label_file, label_path, img_path): (label_path, img_path) for label_path, img_path in tasks}
-            for future in concurrent.futures.as_completed(future_to_file):
-                result = future.result()
-                if result:
-                    valid_samples.append(result)
-                    target_class_annotations += result['annotations']
-        
-        # Convert string paths back to Path objects
-        for sample in valid_samples:
-            sample['image_path'] = Path(sample['image_path'])
-            sample['label_path'] = Path(sample['label_path'])
-
-        # Save to cache
-        print(f"Writing dataset list to cache file: {cache_file}")
-        with open(cache_file, 'w') as f:
-            # Revert to string for serialization
-            serializable_samples = [{k: str(v) if isinstance(v, Path) else v for k, v in s.items()} for s in valid_samples]
-            json.dump(serializable_samples, f)
-
-        print(f"✅ Filtered dataset: {len(valid_samples)} images")
-        print(f"📊 Total annotations: {target_class_annotations}")
-        print(f"Avg annotations/image: {target_class_annotations/max(1, len(valid_samples)):.1f}")
+        # Print summary statistics
+        print(f"\n--- Dataset Summary ---")
+        print(f"Filtered dataset: {len(valid_samples)} images with class {self.target_class}")
+        print(f"Total annotations: {target_class_annotations}")
+        if valid_samples:
+            print(f"Average annotations per image: {target_class_annotations/len(valid_samples):.1f}")
         
         return valid_samples
 
@@ -343,89 +350,144 @@ class YoloOneDataset(Dataset):
         # Load and filter annotations for target class
         annotations = self._load_filtered_annotations(label_path, original_w, original_h)
 
-        # Apply augmentations
-        if self.augmentations and annotations:
+        # Apply augmentations if enabled (using absolute coordinates)
+        augmented_image = image.copy()
+        augmented_annotations = [ann.copy() for ann in annotations] if annotations else []
+        
+        if self.augmentations and augmented_annotations:
             try:
-                bboxes = [ann['bbox'] for ann in annotations]
-                class_labels = [0] * len(annotations)  # Always 0 for single-class
+                # Use absolute coordinates for augmentation
+                bboxes = [ann['bbox'] for ann in augmented_annotations]
+                class_labels = [ann['class_id'] for ann in augmented_annotations]
 
                 augmented = self.augmentations(
-                    image=image,
+                    image=augmented_image,
                     bboxes=bboxes,
                     class_labels=class_labels
                 )
 
-                image = augmented['image']
-                bboxes = augmented['bboxes']
-                annotations = [{'bbox': bbox} for bbox in bboxes]
+                augmented_image = augmented['image']
+                augmented_bboxes = augmented['bboxes']
+                
+                # Update annotations with augmented boxes
+                for i, bbox in enumerate(augmented_bboxes):
+                    augmented_annotations[i]['bbox'] = bbox
+                    # Recalculate normalized coordinates after augmentation
+                    h, w = augmented_image.shape[:2]
+                    augmented_annotations[i]['bbox_norm'] = [
+                        bbox[0] / w, bbox[1] / h, bbox[2] / w, bbox[3] / h
+                    ]
 
-            except Exception:
+            except Exception as e:
                 # Keep original if augmentation fails
                 pass
 
-        # --- Letterbox Preprocessing (to match inference pipeline) ---
-        # This ensures the model trains on data with the same aspect ratio preservation as in production.
-        pre_proc_h, pre_proc_w = image.shape[:2]
+        # Use augmented data for training
+        processed_image = augmented_image
+        processed_annotations = augmented_annotations
+
+        # Letterbox preprocessing
+        pre_proc_h, pre_proc_w = processed_image.shape[:2]
         scale_factor = min(self.img_size[0] / pre_proc_h, self.img_size[1] / pre_proc_w)
         new_h, new_w = int(pre_proc_h * scale_factor), int(pre_proc_w * scale_factor)
 
-        # Create a padded image with a constant color (114)
+        # Create padded image
         padded_image = np.full((self.img_size[0], self.img_size[1], 3), 114, dtype=np.uint8)
-        resized_img = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        resized_img = cv2.resize(processed_image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
-        # Calculate padding and place the resized image
+        # Calculate padding
         pad_top = (self.img_size[0] - new_h) // 2
         pad_left = (self.img_size[1] - new_w) // 2
         padded_image[pad_top:pad_top + new_h, pad_left:pad_left + new_w] = resized_img
 
         # Adjust bounding boxes for letterboxing
-        if annotations:
-            new_annotations = []
-            for ann in annotations:
+        final_annotations = []
+        if processed_annotations:
+            for ann in processed_annotations:
+                # Use absolute coordinates for letterbox transformation
                 x1, y1, x2, y2 = ann['bbox']
-                # Scale and pad the box coordinates to match the padded image
-                new_bbox = [
-                    x1 * scale_factor + pad_left, y1 * scale_factor + pad_top,
-                    x2 * scale_factor + pad_left, y2 * scale_factor + pad_top
-                ]
-                new_annotations.append({'bbox': new_bbox})
-            annotations = new_annotations
+                
+                # Apply letterbox transformation
+                new_x1 = x1 * scale_factor + pad_left
+                new_y1 = y1 * scale_factor + pad_top
+                new_x2 = x2 * scale_factor + pad_left
+                new_y2 = y2 * scale_factor + pad_top
+                
+                # Convert back to normalized coordinates for the padded image
+                new_x1_norm = new_x1 / self.img_size[1]
+                new_y1_norm = new_y1 / self.img_size[0]
+                new_x2_norm = new_x2 / self.img_size[1]
+                new_y2_norm = new_y2 / self.img_size[0]
+                
+                # Clip to [0, 1]
+                new_x1_norm = max(0, min(1, new_x1_norm))
+                new_y1_norm = max(0, min(1, new_y1_norm))
+                new_x2_norm = max(0, min(1, new_x2_norm))
+                new_y2_norm = max(0, min(1, new_y2_norm))
+                
+                # Only keep valid boxes
+                if new_x2_norm > new_x1_norm and new_y2_norm > new_y1_norm:
+                    final_annotations.append({
+                        'bbox_norm': [new_x1_norm, new_y1_norm, new_x2_norm, new_y2_norm],
+                        'batch_index': ann['batch_index']
+                    })
 
         # Convert image to tensor
         image_tensor = torch.from_numpy(padded_image).permute(2, 0, 1).float() / 255.0
 
-        # Convert annotations to tensor
-        targets = self._annotations_to_tensor(annotations)
+        # Convert annotations to tensor (using normalized coordinates)
+        targets = self._annotations_to_tensor_normalized(final_annotations)
 
         return {
             'image': image_tensor,
             'targets': targets,
             'image_path': str(img_path),
-            'original_size': (original_h, original_w)
+            'original_size': (original_h, original_w),
+            'scale_factor': scale_factor,
+            'padding': (pad_top, pad_left)
         }
 
+    def _annotations_to_tensor_normalized(self, annotations: List[Dict]) -> torch.Tensor:
+        """
+        Convert annotations to tensor format with normalized coordinates.
+        Format: [batch_idex, x1_norm, y1_norm, x2_norm, y2_norm]
+        """
+        if not annotations:
+            return torch.zeros((0, 5), dtype=torch.float32)
+        
+        targets = []
+        for ann in annotations:
+            x1, y1, x2, y2 = ann['bbox_norm']
+            batch_idex = ann['batch_index']
+            targets.append([batch_idex, x1, y1, x2, y2])
+        
+        return torch.tensor(targets, dtype=torch.float32)
+    
     def _load_image(self, img_path: Path) -> Optional[np.ndarray]:
-        """Load image with optional caching"""
-        if self.image_cache is not None and str(img_path) in self.image_cache:
-            return self.image_cache[str(img_path)]
+            """Load image with optional caching"""
+            if self.image_cache is not None and str(img_path) in self.image_cache:
+                return self.image_cache[str(img_path)]
 
-        try:
-            image = cv2.imread(str(img_path))
-            if image is None:
+            try:
+                image = cv2.imread(str(img_path))
+                if image is None:
+                    return None
+
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+                if self.image_cache is not None:
+                    self.image_cache[str(img_path)] = image
+
+                return image
+
+            except Exception:
                 return None
 
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-            if self.image_cache is not None:
-                self.image_cache[str(img_path)] = image
-
-            return image
-
-        except Exception:
-            return None
-
     def _load_filtered_annotations(self, label_path: Path, img_w: int, img_h: int) -> List[Dict]:
-        """Load annotations filtered for target class only"""
+        """
+        Load annotations filtered for target class only.
+        Returns both normalized (YOLO format) and absolute pixel coordinates.
+        """
         annotations = []
 
         try:
@@ -438,78 +500,125 @@ class YoloOneDataset(Dataset):
                     continue
 
                 parts = line.split()
-                if len(parts) != 5:
+                if len(parts) < 5:  # YOLO format requires at least 5 values
                     continue
 
                 try:
                     class_id = int(parts[0])
 
-                    # Only process target class
-                    if class_id != self.target_class:
+                    # # Only process target class
+                    # if class_id != self.target_class:
+                    #     continue
+
+                    # Read normalized coordinates (0-1 range)
+                    x_center_norm = float(parts[1])
+                    y_center_norm = float(parts[2])
+                    width_norm = float(parts[3])
+                    height_norm = float(parts[4])
+
+                    # Validate normalized coordinates
+                    if not (0 <= x_center_norm <= 1 and 0 <= y_center_norm <= 1 and 
+                            0 <= width_norm <= 1 and 0 <= height_norm <= 1):
                         continue
 
-                    x_center = float(parts[1])
-                    y_center = float(parts[2])
-                    width = float(parts[3])
-                    height = float(parts[4])
+                    # Convert normalized center coordinates to normalized corner coordinates
+                    x1_norm = x_center_norm - width_norm / 2
+                    y1_norm = y_center_norm - height_norm / 2
+                    x2_norm = x_center_norm + width_norm / 2
+                    y2_norm = y_center_norm + height_norm / 2
 
-                    # Convert to absolute coordinates
-                    abs_x_center = x_center * img_w
-                    abs_y_center = y_center * img_h
-                    abs_width = width * img_w
-                    abs_height = height * img_h
+                    # Clip to [0, 1] range
+                    x1_norm = max(0, min(1, x1_norm))
+                    y1_norm = max(0, min(1, y1_norm))
+                    x2_norm = max(0, min(1, x2_norm))
+                    y2_norm = max(0, min(1, y2_norm))
 
-                    # Convert to corner format
-                    x1 = abs_x_center - abs_width / 2
-                    y1 = abs_y_center - abs_height / 2
-                    x2 = abs_x_center + abs_width / 2
-                    y2 = abs_y_center + abs_height / 2
+                    # Convert to absolute pixel coordinates for augmentation libraries
+                    x1_abs = x1_norm * img_w
+                    y1_abs = y1_norm * img_h
+                    x2_abs = x2_norm * img_w
+                    y2_abs = y2_norm * img_h
 
+                    # Store both formats
                     annotations.append({
-                        'bbox': [x1, y1, x2, y2],
-                        'bbox_rel': [x_center, y_center, width, height]
+                        # Absolute coordinates for augmentation (albumentation expects pixels)
+                        'bbox': [x1_abs, y1_abs, x2_abs, y2_abs],
+                        # Normalized coordinates for model training
+                        'bbox_norm': [x1_norm, y1_norm, x2_norm, y2_norm],
+                        # Original YOLO format (center, width, height) normalized
+                        'yolo_format': [x_center_norm, y_center_norm, width_norm, height_norm],
+                        'batch_index': 0,
                     })
 
-                except ValueError:
+                except (ValueError, IndexError):
                     continue
 
-        except Exception:
+        except Exception as e:
+            # Log error if needed for debugging
+            # print(f"Error reading label file {label_path}: {e}")
             pass
 
         return annotations
-
-    def _annotations_to_tensor(self, annotations: List[Dict]) -> torch.Tensor:
-        """Convert annotations to YOLO-One tensor format"""
-        if not annotations:
-            return torch.zeros(0, 6)  # Empty tensor
-
-        targets = []
-
-        for ann in annotations:
-            bbox = ann['bbox']
-
-            # Convert to relative coordinates
-            x1, y1, x2, y2 = bbox
-            x_center = (x1 + x2) / 2 / self.img_size[1]
-            y_center = (y1 + y2) / 2 / self.img_size[0]
-            width = (x2 - x1) / self.img_size[1]
-            height = (y2 - y1) / self.img_size[0]
-
-            # Format: [batch_idx, class, x_center, y_center, width, height]
-            # Note: batch_idx will be set in collate_fn, class is always 0
-            targets.append([0, 0, x_center, y_center, width, height])
-
-        return torch.tensor(targets, dtype=torch.float32)
-
     def _get_empty_sample(self) -> Dict[str, torch.Tensor]:
         """Return empty sample for corrupted data"""
         return {
             'image': torch.zeros(3, *self.img_size),
-            'targets': torch.zeros(0, 6),
+            'targets': torch.zeros(0, 5),
             'image_path': '',
             'original_size': (0, 0)
         }
 
+def get_augmentations(aug_config: Dict[str, Any]) -> A.Compose:
+   
+
+    """
+    Construct an albumentations.Compose object from a dictionary of augmentation parameters.
+
+    The dictionary should contain the following keys:
+        - fliplr: probability of horizontal flip
+        - flipud: probability of vertical flip
+        - translate: range of translation
+        - scale: range of scale
+        - degrees: range of rotation
+        - shear: range of shear
+        - perspective: range of perspective distortion
+        - hsv_h, hsv_s, hsv_v: range of hue, saturation, value shift
+
+    The function returns a Compose object which can be used to augment images.
+
+    Args:
+        aug_config (Dict[str, Any]): dictionary of augmentation parameters
+
+    Returns:
+        A.Compose: an albumentations compose object
+    """
+    return A.Compose([
+        A.HorizontalFlip(p=aug_config.get('fliplr', 0.0)),
+        A.VerticalFlip(p=aug_config.get('flipud', 0.0)),
+        A.ShiftScaleRotate(
+            shift_limit=aug_config.get('translate', 0.0),
+            scale_limit=aug_config.get('scale', 0.0),
+            rotate_limit=aug_config.get('degrees', 0.0),
+            shear_limit=aug_config.get('shear', 0.0),
+            perspective_limit=aug_config.get('perspective', 0.0),
+            p=0.7, # probility for this block
+            border_mode=cv2.BORDER_CONSTANT,
+            value=114
+        ),
+
+        A.HueSaturationValue(
+            hue_shift_limit=aug_config.get('hsv_h', 0.0) * 100, 
+            sat_shift_limit=aug_config.get('hsv_s', 0.0) * 100,
+            val_shift_limit=aug_config.get('hsv_v', 0.0) * 100,
+            p=0.7 
+        ),
+        A.RandomBrightnessContrast(p=0.5),
+
+    ], bbox_params=A.BboxParams(
+        format='pascal_voc',
+        label_fields=['class_labels'],
+        min_visibility=0.1
+    ))
 def create_yolo_one_dataset(
     root_dir: str,
     split: str = 'train',
@@ -517,17 +626,22 @@ def create_yolo_one_dataset(
     target_class: Optional[int] = None,
     batch_size: int = 16,
     num_workers: int = 4,
-    augmentations: Optional[A.Compose] = None
+    augmentations: Optional[A.Compose] = None,
+    use_augmentation: bool = False
 ) -> Tuple[YoloOneDataset, DataLoader]:
     """
     Create YOLO-One dataset and dataloader with intelligent class selection
     """
+    augmentations_pipeline = None
+    if split == 'train' and use_augmentation:
+        print("✅ Augmentations enabled for training...")
+        augmentations_pipeline = get_augmentations(augmentations)
     dataset = YoloOneDataset(
         root_dir=root_dir,
         split=split,
         img_size=img_size,
         target_class=target_class,
-        augmentations=augmentations
+        augmentations=augmentations_pipeline
     )
 
     dataloader = DataLoader(
@@ -567,7 +681,7 @@ def yolo_one_collate_fn(batch):
     if targets:
         targets = torch.cat(targets, 0)
     else:
-        targets = torch.zeros(0, 6)
+        targets = torch.zeros(0, 5, device=images.device)
 
     return {
         'images': images,

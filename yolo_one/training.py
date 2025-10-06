@@ -29,10 +29,10 @@ from yolo_one.losses import create_yolo_one_loss
 from yolo_one.metrics import YoloOneMetrics
 from yolo_one.optimizer import create_yolo_one_optimizer
 from yolo_one.configs.config import create_yolo_one_config, YoloOneConfig
-from yolo_one.data.preprocessing import create_yolo_one_dataset, YoloOneDatasetAnalyzer
+from yolo_one.data.preprocessing import create_yolo_one_dataset
 from yolo_one.utils.general import EMAModel
 from yolo_one.utils.general import (
-    setup_logging, save_checkpoint, load_checkpoint, # We'll modify save_checkpoint internally
+    setup_logging, save_checkpoint, load_checkpoint,
     get_device, set_random_seed, count_parameters
 )
 
@@ -92,7 +92,7 @@ class YoloOneTrainer:
         # Initialize optimizer and scheduler
         self.optimizer, self.scheduler = self._create_optimizer()
         
-        # Initialize metrics (using the comprehensive YoloOneMetrics)
+        # Initialize metrics
         self.metrics = self._create_metrics()
         
         # Initialize EMA if enabled
@@ -105,7 +105,7 @@ class YoloOneTrainer:
             torch.cuda.is_available()
         )
         self.scaler = GradScaler() if self.use_mixed_precision else None
-        
+
         # Training state
         self.current_epoch = 0
         self.global_step = 0
@@ -129,18 +129,17 @@ class YoloOneTrainer:
         
         # Create model with proper configuration
         model = YoloOne(
-            model_size=model_config.get('model_size', 'nano')
+            model_size=model_config['model_size'],
         )
         
         model = model.to(self.device)
         
-        # Compile model if enabled (PyTorch 2.0+)
         if self.config['training'].get('compile_model', False):
-            try:
-                model = torch.compile(model)
-                self.logger.info("Model compiled successfully")
-            except Exception as e:
-                self.logger.warning(f"Model compilation failed: {e}")
+             try:
+                 model = torch.compile(model)
+                 self.logger.info("Model compiled successfully")
+             except Exception as e:
+                 self.logger.warning(f"Model compilation failed: {e}")
         
         return model
     
@@ -157,7 +156,6 @@ class YoloOneTrainer:
             iou_type=loss_config.get('iou_type', 'meiou'),
             label_smoothing=loss_config.get('label_smoothing', 0.0),
             obj_neg_weight=loss_config.get('obj_neg_weight', 0.05),
-            p5_weight_boost=loss_config.get('p5_weight_boost', 1.2),
             moe_balance_weight=loss_config.get('moe_balance_weight', 0.001)
         )
         
@@ -217,7 +215,6 @@ class YoloOneTrainer:
         
         for epoch in range(self.current_epoch, total_epochs):
             self.current_epoch = epoch
-            
             # Training phase
             train_metrics = self._train_epoch(total_epochs)
             
@@ -226,11 +223,10 @@ class YoloOneTrainer:
                 val_metrics = self._validate_epoch(total_epochs)
                 
                 # Check for best model
-                current_map = val_metrics.get('mAP', 0.0)
+                current_map = val_metrics['mAP']
                 if current_map > self.best_map:
                     self.best_map = current_map
                     self.patience_counter = 0
-                    # Save only model state_dict for best model to reduce size
                     self._save_checkpoint(is_best=True, only_model_state=True)
                     self.logger.info(f"New best mAP: {self.best_map:.4f}")
                 else:
@@ -248,7 +244,7 @@ class YoloOneTrainer:
             if self.scheduler and not isinstance(self.scheduler, torch.optim.lr_scheduler.OneCycleLR):
                 self.scheduler.step()
             
-            # Save regular checkpoint (full state for resumption)
+            # Save regular checkpoint
             if (epoch + 1) % 5 == 0:
                 self._save_checkpoint(is_best=False, only_model_state=False)
             
@@ -258,12 +254,11 @@ class YoloOneTrainer:
                 self.logger.info(f"Early stopping triggered after {patience} epochs without improvement")
                 break
             
-            # Manually update the outer progress bar
             pbar_outer.update(1)
             
         pbar_outer.close()
         
-        # Final validation and save (only model state_dict)
+        # Final validation and save
         final_metrics = self._validate_epoch(total_epochs)
         self._save_checkpoint(is_best=False, filename='final_model.pt', only_model_state=True)
         
@@ -290,19 +285,19 @@ class YoloOneTrainer:
         accumulate_batches = self.config['training'].get('accumulate_batches', 1)
         
         epoch_start_time = time.time()
-        step_count = 0  # Compteur des vraies steps
+        step_count = 0
         
         pbar = tqdm(self.train_dataloader, desc=f"Epoch {self.current_epoch + 1}/{total_epochs} (Training)", leave=False)
         for batch_idx, batch in enumerate(pbar):
             
-            # Move data to device (images and targets are already tensors from DataLoader)
-            images = batch['images'].to(self.device, non_blocking=True) # non_blocking for faster transfer
-            targets = batch['targets'].to(self.device, non_blocking=True) # non_blocking for faster transfer
+            # Move data to device
+            images = batch['images'].to(self.device, non_blocking=True)
+            targets = batch['targets'].to(self.device, non_blocking=True)
             
             # Forward pass with mixed precision
             with autocast(enabled=self.use_mixed_precision):
                 predictions = self.model(images)
-                loss_dict = self.criterion(predictions, targets, self.model)
+                loss_dict = self.criterion(predictions, targets)
                 loss = loss_dict['total_loss'] / accumulate_batches
             
             # Backward pass
@@ -333,7 +328,7 @@ class YoloOneTrainer:
                 if self.ema_model:
                     self.ema_model.update(self.model)
                 
-                # Update Step OneCycleLR per optimization step
+                # Update OneCycleLR per optimization step
                 if self.scheduler and isinstance(self.scheduler, torch.optim.lr_scheduler.OneCycleLR):
                     self.scheduler.step()
                 
@@ -347,7 +342,7 @@ class YoloOneTrainer:
             
             current_lr = self.optimizer.param_groups[0]['lr']
 
-            # Update the inner progress bar with real-time loss
+            # Update progress bar
             pbar.set_postfix(
                 loss=loss_dict['total_loss'].item(),
                 box_loss=loss_dict['box_loss'].item(),
@@ -386,37 +381,34 @@ class YoloOneTrainer:
         
         val_start_time = time.time()
         
-        # Iterate over batches with tqdm for detailed progress
         pbar = tqdm(self.val_dataloader, desc=f"Epoch {self.current_epoch + 1} (Validation)", leave=False)
         with torch.no_grad():
             for batch_idx, batch in enumerate(pbar):
                 
-                # Move data to device (images and targets are already tensors from DataLoader)
-                images = batch['images'].to(self.device, non_blocking=True) # non_blocking for faster transfer
-                targets = batch['targets'].to(self.device, non_blocking=True) # non_blocking for faster transfer
+                # Move data to device
+                images = batch['images'].to(self.device, non_blocking=True)
+                targets = batch['targets'].to(self.device, non_blocking=True)
                 
                 # Forward pass
                 inference_start = time.time()
                 with autocast(enabled=self.use_mixed_precision):
                     predictions = model_to_eval(images, decode=True, img_size=images.shape[2:])
-                    loss_dict = self.criterion(predictions, targets, model_to_eval)
+                    loss_dict = self.criterion(predictions, targets)
                 
                 inference_time = time.time() - inference_start
                 
-                # Predictions and targets are already on the correct device.
                 decoded_preds_gpu = predictions['decoded']
 
                 # Update metrics
                 self.metrics.update(
-                    predictions=decoded_preds_gpu, # Pass decoded GPU predictions
-                    targets=targets, # Pass GPU targets
-                    input_size=images.shape[2:], # Pass input size for coordinate scaling
-                    inference_time=inference_time / len(images)  # Per image
+                    predictions=decoded_preds_gpu,
+                    targets=targets,
+                    input_size=images.shape[2:],
+                    inference_time=inference_time / len(images)
                 )
                 
                 running_loss += loss_dict['total_loss'].item()
 
-                # Update the inner progress bar with real-time loss
                 pbar.set_postfix(val_loss=loss_dict['total_loss'].item())
         
         # Compute metrics
@@ -429,7 +421,6 @@ class YoloOneTrainer:
     def _log_metrics(self, metrics: Dict[str, float], epoch: int, phase: str):
         """Log metrics to the logger"""
         
-        # Log important metrics
         if phase == 'val':
             self.logger.info(
                 f"Validation Epoch [{epoch+1}] - "
@@ -448,25 +439,15 @@ class YoloOneTrainer:
             )
 
     def _save_checkpoint(self, is_best: bool = False, filename: Optional[str] = None, only_model_state: bool = False):
-        """
-        Save model checkpoint.
-        
-        Args:
-            is_best (bool): True if this is the best model so far.
-            filename (Optional[str]): Custom filename for the checkpoint.
-            only_model_state (bool): If True, only saves the model's state_dict
-                                     (and EMA model's state_dict if applicable),
-                                     resulting in a smaller file for deployment.
-        """
+        """Save model checkpoint"""
         
         if filename is None:
             filename = f'checkpoint_epoch_{self.current_epoch+1}.pt'
         
         if only_model_state:
-            # For final or best model, save only model's state_dict (or EMA's)
             model_to_save = self.ema_model.ema if self.ema_model else self.model
             torch.save(model_to_save.state_dict(), self.run_dir / filename)
-            self.logger.info(f"Saved lightweight model state : {self.run_dir / filename}")
+            self.logger.info(f"Saved lightweight model state: {self.run_dir / filename}")
         else:
             checkpoint = {
                 'epoch': self.current_epoch + 1,
@@ -482,14 +463,13 @@ class YoloOneTrainer:
             }
             checkpoint_path = self.run_dir / filename
             torch.save(checkpoint, checkpoint_path)
-            self.logger.info(f"Checkpoint saved : {checkpoint_path}")
+            self.logger.info(f"Checkpoint saved: {checkpoint_path}")
         
-        # Always save best_model.pt as a lightweight model state
         if is_best:
             best_path = self.run_dir / 'best_model.pt'
             model_to_save = self.ema_model.ema if self.ema_model else self.model
             torch.save(model_to_save.state_dict(), best_path)
-            self.logger.info(f"Best model saved  : {best_path}")
+            self.logger.info(f"Best model saved: {best_path}")
     
     def _load_checkpoint(self, checkpoint_path: str):
         """Load checkpoint and resume training"""
@@ -530,7 +510,7 @@ def main():
     parser.add_argument('--config', type=str, default='./yolo_one/configs/yolo_one_nano.yaml',
                         help='Path to configuration file')
     parser.add_argument('--data', type=str, required=True,
-                        help='Path to dataset root directory (e.g., datasets/)')
+                        help='Path to dataset root directory')
     parser.add_argument('--model-size', type=str, default='nano',
                         choices=['nano', 'small', 'medium', 'large'],
                         help='Model size')
@@ -541,9 +521,9 @@ def main():
     parser.add_argument('--lr', type=float, default=None,
                         help='Override learning rate')
     parser.add_argument('--iou-type', type=str, default=None,
-                        help='Override IoU type for loss (e.g., ciou, meiou, eiou)')
+                        help='Override IoU type for loss')
     parser.add_argument('--device', type=str, default=None,
-                        help='Training device (cuda/cpu)')
+                        help='Training device')
     parser.add_argument('--resume', type=str, default=None,
                         help='Resume from checkpoint')
     parser.add_argument('--output-dir', type=str, default='./runs',
@@ -575,17 +555,13 @@ def main():
         config['loss']['iou_type'] = args.iou_type
     
     root_dir = Path(args.data)
-    
-    analyzer = YoloOneDatasetAnalyzer(root_dir)
-    target_class = analyzer.analyze_and_select_class(target_class=None)
-    
     # Create dataloaders
     _, train_dataloader = create_yolo_one_dataset(
         root_dir=root_dir,
         split='train',
-        target_class=target_class,  # Pass the pre-analyzed class
         batch_size=config['training']['batch_size'],
-        img_size=(config['model']['input_size'], config['model']['input_size'] ),
+        img_size=(config['model']['input_size'], config['model']['input_size']),
+        use_augmentation=config['training']['use_augmentation'],
         augmentations=config['augmentation'],
         num_workers=args.workers
     )
@@ -593,10 +569,8 @@ def main():
     _, val_dataloader = create_yolo_one_dataset(
         root_dir=root_dir,
         split='val',
-        target_class=target_class,  # Pass the same pre-analyzed class
         batch_size=config['training']['batch_size'],
         img_size=(config['model']['input_size'], config['model']['input_size']),
-        augmentations=config['augmentation'],
         num_workers=args.workers,
     )
     
@@ -618,8 +592,7 @@ def main():
         print(f"Final model saved to: {trainer.run_dir}")
         
     except KeyboardInterrupt:
-        print("\n❌ Training interrupted by user")
-        # Save interrupted model as lightweight state
+        print("\n⌨ Training interrupted by user")
         trainer._save_checkpoint(is_best=False, filename='interrupted_model.pt', only_model_state=True)
         
     except Exception as e:
