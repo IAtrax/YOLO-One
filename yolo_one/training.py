@@ -153,10 +153,10 @@ class YoloOneTrainer:
             obj_weight=loss_config.get('obj_weight', 1.0),
             focal_alpha=loss_config.get('focal_alpha', 0.25),
             focal_gamma=loss_config.get('focal_gamma', 1.5),
-            iou_type=loss_config.get('iou_type', 'meiou'),
+            iou_type=loss_config.get('iou_type', 'iou'),
             label_smoothing=loss_config.get('label_smoothing', 0.0),
             obj_neg_weight=loss_config.get('obj_neg_weight', 0.05),
-            moe_balance_weight=loss_config.get('moe_balance_weight', 0.001)
+            # moe_balance_weight=loss_config.get('moe_balance_weight', 0.001)
         )
         
         return criterion.to(self.device)
@@ -531,8 +531,7 @@ def main():
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
     parser.add_argument('--workers', type=int, default=8,
-                        help='Number of data loader workers')
-    
+                        help='Number of data loader workers')    
     args = parser.parse_args()
     
     # Set random seed

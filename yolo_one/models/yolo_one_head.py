@@ -33,15 +33,6 @@ class Scale(nn.Module):
 
 
 class DecoupledHeadPerLevel(nn.Module):
-    """
-    Per-level head with decoupled towers for objectness and regression.
-
-    Outputs:
-        - obj_logits: [B, 1, H, W]
-        - bbox:       [B, 4, H, W]  (xywh in cell/stride space; decoding handles conversion)
-        - detections: [B, 5, H, W]  (concat of obj_logits and bbox)
-        - feat:       [B, C, H, W]  (optionally refined feature)
-    """
     def __init__(
         self,
         in_channels: int,
@@ -53,7 +44,6 @@ class DecoupledHeadPerLevel(nn.Module):
         super().__init__()
         c_mid = mid_channels or in_channels
 
-        # Lightweight decoupled towers: configurable number of 3x3 Conv blocks
         obj_tower_layers = [Conv(in_channels, c_mid, kernel_size=3, stride=1)]
         reg_tower_layers = [Conv(in_channels, c_mid, kernel_size=3, stride=1)]
         for _ in range(num_convs - 1):
@@ -62,15 +52,12 @@ class DecoupledHeadPerLevel(nn.Module):
         self.obj_tower = nn.Sequential(*obj_tower_layers)
         self.reg_tower = nn.Sequential(*reg_tower_layers)
 
-        # Prediction heads
         self.obj_out = nn.Conv2d(c_mid, 1, kernel_size=1)
         self.bbox_out = nn.Conv2d(c_mid, 4, kernel_size=1)
-        self.reg_scale = Scale(1.0)
+        self.reg_scale = Scale(2.0)  # 1.0 to 4.0
 
-        # Optional light feature refinement (pass-through if disabled)
         self.refine = Conv(in_channels, in_channels, kernel_size=3, stride=1) if use_refine else nn.Identity()
 
-        # Initialize weights and set objectness bias prior
         self._init_weights(obj_prior)
 
     def _init_weights(self, prior: float) -> None:
@@ -82,18 +69,22 @@ class DecoupledHeadPerLevel(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
-        # Bias prior for objectness: bias = -log((1 - p) / p)
+
         bias = -math.log((1.0 - prior) / max(prior, 1e-6))
         nn.init.constant_(self.obj_out.bias, bias)
+
+        if self.bbox_out.bias is not None:
+            nn.init.constant_(self.bbox_out.bias[2], 1.2)  # w
+            nn.init.constant_(self.bbox_out.bias[3], 1.2)  # h
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         h_obj = self.obj_tower(x)
         h_reg = self.reg_tower(x)
 
-        obj_logits = self.obj_out(h_obj)                 # [B, 1, H, W]
-        bbox = self.reg_scale(self.bbox_out(h_reg))      # [B, 4, H, W]
+        obj_logits = self.obj_out(h_obj)
+        bbox = self.reg_scale(self.bbox_out(h_reg))
 
-        detections = torch.cat([obj_logits, bbox], dim=1)      # [B, 5, H, W]
+        detections = torch.cat([obj_logits, bbox], dim=1)
         feat_out = self.refine(x)
         return {"detections": detections, "obj_logits": obj_logits, "bbox": bbox, "feat": feat_out}
 
@@ -109,7 +100,7 @@ class YoloOneDetectionHead(nn.Module):
         - obj_logits:   list of [B, 1, Hk, Wk]
         - bbox:         list of [B, 4, Hk, Wk]
         - features:     list of [B, Ck, Hk, Wk] (refined or pass-through), if enabled
-        - decoded:      list of [B, 5, Hk, Wk] with xywh normalized to image and conf=sigmoid(obj), if decode=True
+        - decoded:      list of [B, 5, Hk, Wk] with xyxy normalized to image and conf=sigmoid(obj), if decode=True
     """
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
@@ -125,9 +116,8 @@ class YoloOneDetectionHead(nn.Module):
         self.return_features: bool = bool(config.get("return_features", True))
         self.refine_features: bool = bool(config.get("refine_features", False))
         obj_prior: float = float(config.get("obj_prior", 0.01))
-        self.moe_routing_threshold: float = float(config.get("moe_routing_threshold", 0.5)) # Default to 50%
+        self.moe_routing_threshold: float = float(config.get("moe_routing_threshold", 0.5))
 
-        # Build per-level heads
         self.level_heads = nn.ModuleList()
         for i, c_in in enumerate(self.in_channels):
             if isinstance(head_mid, int):
@@ -157,7 +147,7 @@ class YoloOneDetectionHead(nn.Module):
             torch.arange(w, device=device),
             indexing="ij",
         )
-        return torch.stack((gx, gy), dim=0).float()  # [2, H, W]
+        return torch.stack((gx, gy), dim=0).float()
 
     def forward(
         self,
@@ -172,52 +162,39 @@ class YoloOneDetectionHead(nn.Module):
         use_moe_routing = not self.training and gate_scores is not None
 
         if use_moe_routing:
-            # --- Advanced MoE Routing Logic for Inference ---
-            # 1. Find experts with scores above the threshold.
             above_threshold_mask = gate_scores > self.moe_routing_threshold
 
-            # 2. Count how many experts are activated per image in the batch.
             num_above_threshold = above_threshold_mask.sum(dim=1)
 
-            # 3. Identify which images activate only one expert vs. multiple.
             single_expert_mask = (num_above_threshold == 1).unsqueeze(1)
             multi_expert_mask = (num_above_threshold > 1).unsqueeze(1)
 
-            # 4. For the multi-expert case, create a mask for only the top 2 experts.
             top2_indices = torch.topk(gate_scores, k=2, dim=1).indices
             top2_mask = torch.zeros_like(gate_scores, dtype=torch.bool).scatter_(1, top2_indices, True)
 
-            # 5. Combine the logic:
             experts_to_use = (above_threshold_mask * single_expert_mask) | (top2_mask * multi_expert_mask)
 
-            # 6. Fallback Mechanism: If no expert was selected, activate the single best one.
             num_activated = experts_to_use.sum(dim=1)
             fallback_mask = (num_activated == 0)
             if fallback_mask.any():
                 fallback_indices = torch.argmax(gate_scores[fallback_mask], dim=1)
                 experts_to_use[fallback_mask, fallback_indices] = True
 
-            # --- Sparse Computation using Active Experts ---
             batch_size = x[0].shape[0]
-            # Use a safe minimum value for the given dtype to avoid FP16 overflow
             min_val = torch.finfo(x[0].dtype).min
             obj_logits = [torch.full((batch_size, 1, *feat.shape[2:]), min_val, device=feat.device, dtype=feat.dtype) for feat in x]
             bboxs = [torch.zeros(batch_size, 4, *feat.shape[2:], device=feat.device, dtype=feat.dtype) for feat in x]
 
-            # Iterate through each expert (level_head)
             for i, level_head in enumerate(self.level_heads):
-                # Find which items in the batch selected this expert
-                batch_mask = experts_to_use[:, i]  # [B]
+                batch_mask = experts_to_use[:, i]
                 if batch_mask.any():
                     feat_slice = x[i][batch_mask]
                     out = level_head(feat_slice)
                     obj_logits[i][batch_mask] = out["obj_logits"]
                     bboxs[i][batch_mask] = out["bbox"]
-            
+
             detections = [torch.cat([obj, bbox], dim=1) for obj, bbox in zip(obj_logits, bboxs)]
 
-        # --- Standard Path (during training, or if no gating is used) ---
-        # During training, we process all heads to compute gradients for all experts.
         else:
             detections: List[torch.Tensor] = []
             obj_logits: List[torch.Tensor] = []
@@ -240,8 +217,6 @@ class YoloOneDetectionHead(nn.Module):
         }
         if self.return_features:
             if use_moe_routing:
-                # In MoE mode, the concept of a full feature pyramid is ill-defined.
-                # Return an empty list to maintain a consistent API.
                 outputs["features"] = []
             else:
                 outputs["features"] = feats
@@ -251,7 +226,6 @@ class YoloOneDetectionHead(nn.Module):
                 raise ValueError("img_size=[H_img, W_img] is required when decode=True")
             h_img, w_img = int(img_size[0]), int(img_size[1])
 
-            # Determine which experts were activated for at least one image in the batch
             if use_moe_routing:
                 any_expert_activated = experts_to_use.any(dim=0)
             else:
@@ -259,30 +233,32 @@ class YoloOneDetectionHead(nn.Module):
 
             decoded: List[torch.Tensor] = []
             for i, (pred, stride) in enumerate(zip(detections, self.strides)):
-                # If this expert was not activated for any image in the batch, skip it entirely.
                 if not any_expert_activated[i]:
                     continue
 
-                # Perform the full decoding logic only for activated heads.
                 b, _, hk, wk = pred.shape
-                obj = torch.sigmoid(pred[:, :1])     # [B, 1, Hk, Wk]
-                xy = torch.sigmoid(pred[:, 1:3])     # [B, 2, Hk, Wk] cell offsets in [0, 1]                
-                # The loss function uses an implicit log-space for w,h.
-                # The correct inverse is exp(), not softplus().
-                # Clamp to prevent potential overflow with FP16.
-                wh = torch.exp(pred[:, 3:5]).clamp(max=1E4) # [B, 2, Hk, Wk] positive sizes
+                obj = torch.sigmoid(pred[:, :1])
+                xy = torch.sigmoid(pred[:, 1:3])
+                wh = torch.exp(pred[:, 3:5]).clamp(max=1E4)
 
-                grid = self._make_grid(hk, wk, pred.device)   # [2, Hk, Wk]
-                xy_pix = (grid.unsqueeze(0) + xy) * float(stride)  # [B, 2, Hk, Wk]
-                wh_pix = wh * float(stride)                      # [B, 2, Hk, Wk]
-                
-                # Vectorized decoding and normalization for clarity and potential speedup
-                decoded_boxes_pix = torch.cat([xy_pix, wh_pix], dim=1) # [B, 4, Hk, Wk]
+                grid = self._make_grid(hk, wk, pred.device)
+                xy_center_pix = (grid.unsqueeze(0) + xy) * float(stride)
+                wh_pix = wh * float(stride)
+
+                # CONVERT TO XYXY FORMAT
+                x1 = xy_center_pix[:, 0:1] - wh_pix[:, 0:1] / 2
+                y1 = xy_center_pix[:, 1:2] - wh_pix[:, 1:2] / 2
+                x2 = xy_center_pix[:, 0:1] + wh_pix[:, 0:1] / 2
+                y2 = xy_center_pix[:, 1:2] + wh_pix[:, 1:2] / 2
+
+                xyxy_pix = torch.cat([x1, y1, x2, y2], dim=1)
+
+                # NORMALIZE TO [0, 1]
                 norm_tensor = torch.tensor([w_img, h_img, w_img, h_img], device=pred.device, dtype=pred.dtype).view(1, 4, 1, 1)
-                decoded_boxes_norm = decoded_boxes_pix / norm_tensor
-                
-                # [B, 5, Hk, Wk] -> (x, y, w, h, conf)
-                decoded.append(torch.cat([decoded_boxes_norm, obj], dim=1))
+                xyxy_norm = xyxy_pix / norm_tensor
+
+                # [B, 5, Hk, Wk] -> (x1, y1, x2, y2, conf) in xyxy format
+                decoded.append(torch.cat([xyxy_norm, obj], dim=1))
             outputs["decoded"] = decoded
 
         return outputs
@@ -320,7 +296,6 @@ def create_yolo_one_head(
             raise ValueError("Provided backbone does not expose 'out_channels'.")
         in_channels = list(getattr(backbone, "out_channels"))
 
-    # Lighter head for smaller models
     num_head_convs = 1 if model_size in ['nano', 'small'] else 2
 
     config: Dict[str, Any] = {
@@ -331,6 +306,6 @@ def create_yolo_one_head(
         "return_features": kwargs.get("return_features", True),
         "refine_features": kwargs.get("refine_features", False),
         "obj_prior": kwargs.get("obj_prior", 0.01),
-        "moe_routing_threshold": kwargs.get("moe_routing_threshold", 0.5), # Default to 50%
+        "moe_routing_threshold": kwargs.get("moe_routing_threshold", 0.5),
     }
     return YoloOneDetectionHead(config)
