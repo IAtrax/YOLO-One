@@ -55,10 +55,10 @@ class YoloOneBackbone(nn.Module):
             List[torch.Tensor]: List of output tensors, each from a different scale.
         """
         outputs = []
-        x = self.stem(x)        
+        x = self.stem(x)     # P1   
         for i, layer in enumerate(self.layers):
             x = layer(x)
-            if i == 0 : # Skip the first stages ( P2)
+            if i == 0 : # Skip the second stages ( P2)
                 continue
             outputs.append(x)
         return outputs # [ P3, P4, P5 ]
@@ -114,6 +114,5 @@ def create_yolo_one_backbone(model_size: str = 'nano') -> YoloOneBackbone:
         ],
         'stem_kernel_size': stem_kernel_size,
     }
-    print('base_config', base_config)
 
     return YoloOneBackbone(base_config)

@@ -211,7 +211,7 @@ class YoloOneInference:
                 start_time = time.time()
                 predictions = self.model(
                     preprocessed_tensor, 
-                    decode=True, 
+                    decode=False, 
                     img_size=preprocessed_tensor.shape[2:]
                 )
                 inference_time = time.time() - start_time

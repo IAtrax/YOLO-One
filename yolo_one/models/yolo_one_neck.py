@@ -32,8 +32,8 @@ class PAFPN(nn.Module):
 
     Config keys:
         - in_channels:  List[int] input channels (P3, P4, P5)
-        - out_channels: List[int] output channels (often equal, e.g., C4)
-        - num_blocks:   int, number of internal blocks inside CSP stages
+        - out_channels: List[int] output channels 
+        - num_blocks:   int, number of internal blocks inside CSP/Bottleneck stages
         - sum_fusion:   bool, if True use element-wise sum instead of concat (lighter)
         - block_type:   str, 'csp' or 'bottleneck' to select the building block
         - upsample_mode:str, 'nearest' (default) or 'nearest-exact'
@@ -47,7 +47,7 @@ class PAFPN(nn.Module):
         if len(in_channels) != 3 or len(out_channels) != 3:
             raise ValueError("Expected 3 input and 3 output channels for [P3, P4, P5]")
 
-        self.sum_fusion: bool = bool(config.get("sum_fusion", False))
+        self.sum_fusion: bool = bool(config.get("sum_fusion", True))
         self.upsample_mode: str = str(config.get("upsample_mode", "nearest"))
         block_type = config.get("block_type", "csp")
         Block = {"csp": CSPBlock, "bottleneck": Bottleneck}[block_type]
@@ -156,7 +156,7 @@ def create_yolo_one_neck(
     default_neck_channels = in_channels[0] if model_size == "nano" else in_channels[1]
     neck_channels = int(kwargs.get("neck_channels", default_neck_channels))
 
-    default_block_type = "bottleneck" if model_size == "nano" else "csp"
+    default_block_type = "csp" # "bottleneck" if model_size == "nano" else "csp"
     block_type = kwargs.get("block_type", default_block_type)
 
     default_sum = True if model_size == "nano" else False

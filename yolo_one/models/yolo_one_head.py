@@ -39,8 +39,16 @@ class DecoupledHeadPerLevel(nn.Module):
         mid_channels: Optional[int] = None,
         num_convs: int = 2,
         obj_prior: float = 0.01,
-        use_refine: bool = False,
     ) -> None:
+        """
+        Initialize a DecoupledHeadPerLevel module.
+
+        Args:
+            in_channels (int): Number of input channels.
+            mid_channels (Optional[int], optional): Number of middle channels. Defaults to None.
+            num_convs (int, optional): Number of convolution blocks in each tower. Defaults to 2.
+            obj_prior (float, optional): Initial objectness prior. Defaults to 0.01.
+        """
         super().__init__()
         c_mid = mid_channels or in_channels
 
@@ -56,7 +64,6 @@ class DecoupledHeadPerLevel(nn.Module):
         self.bbox_out = nn.Conv2d(c_mid, 4, kernel_size=1)
         self.reg_scale = Scale(2.0)  # 1.0 to 4.0
 
-        self.refine = Conv(in_channels, in_channels, kernel_size=3, stride=1) if use_refine else nn.Identity()
 
         self._init_weights(obj_prior)
 
@@ -85,8 +92,7 @@ class DecoupledHeadPerLevel(nn.Module):
         bbox = self.reg_scale(self.bbox_out(h_reg))
 
         detections = torch.cat([obj_logits, bbox], dim=1)
-        feat_out = self.refine(x)
-        return {"detections": detections, "obj_logits": obj_logits, "bbox": bbox, "feat": feat_out}
+        return {"detections": detections, "obj_logits": obj_logits, "bbox": bbox}
 
 
 class YoloOneDetectionHead(nn.Module):
@@ -113,8 +119,6 @@ class YoloOneDetectionHead(nn.Module):
 
         head_mid: Optional[Union[int, Sequence[int]]] = config.get("head_channels", None)
         num_head_convs: int = int(config.get("num_head_convs", 2))
-        self.return_features: bool = bool(config.get("return_features", True))
-        self.refine_features: bool = bool(config.get("refine_features", False))
         obj_prior: float = float(config.get("obj_prior", 0.01))
         self.moe_routing_threshold: float = float(config.get("moe_routing_threshold", 0.5))
 
@@ -135,7 +139,6 @@ class YoloOneDetectionHead(nn.Module):
                     mid_channels=c_mid,
                     num_convs=num_head_convs,
                     obj_prior=obj_prior,
-                    use_refine=self.refine_features,
                 )
             )
 
@@ -199,27 +202,19 @@ class YoloOneDetectionHead(nn.Module):
             detections: List[torch.Tensor] = []
             obj_logits: List[torch.Tensor] = []
             bboxs: List[torch.Tensor] = []
-            if self.return_features:
-                feats: List[torch.Tensor] = []
+            
 
             for i, feat in enumerate(x):
                 out = self.level_heads[i](feat)
                 detections.append(out["detections"])
                 obj_logits.append(out["obj_logits"])
                 bboxs.append(out["bbox"])
-                if self.return_features:
-                    feats.append(out["feat"])
-
+                
         outputs: Dict[str, Any] = {
             "detections": detections,
             "obj_logits": obj_logits,
             "bbox": bboxs,
         }
-        if self.return_features:
-            if use_moe_routing:
-                outputs["features"] = []
-            else:
-                outputs["features"] = feats
 
         if decode:
             if img_size is None or len(img_size) != 2:
@@ -239,7 +234,7 @@ class YoloOneDetectionHead(nn.Module):
                 b, _, hk, wk = pred.shape
                 obj = torch.sigmoid(pred[:, :1])
                 xy = torch.sigmoid(pred[:, 1:3])
-                wh = torch.exp(pred[:, 3:5]).clamp(max=1E4)
+                wh = torch.sigmoid(pred[:, 3:5]).clamp(max=1E4)
 
                 grid = self._make_grid(hk, wk, pred.device)
                 xy_center_pix = (grid.unsqueeze(0) + xy) * float(stride)
@@ -259,7 +254,7 @@ class YoloOneDetectionHead(nn.Module):
 
                 # [B, 5, Hk, Wk] -> (x1, y1, x2, y2, conf) in xyxy format
                 decoded.append(torch.cat([xyxy_norm, obj], dim=1))
-            outputs["decoded"] = decoded
+            outputs["decoded"] = detections
 
         return outputs
 

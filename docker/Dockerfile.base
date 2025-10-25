@@ -1,0 +1,47 @@
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git \
+        wget \
+        libgl1-mesa-glx \
+        libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Clone YOLO-One repository
+RUN git clone https://github.com/IAtrax/YOLO-One.git /workspace/YOLO-One
+
+WORKDIR /workspace/YOLO-One
+
+# Patch requirements.txt to fix NumPy compatibility with PyTorch 2.1.0
+RUN sed -i 's/numpy>=1\.24\.0/numpy>=1.24.0,<2.0.0/' requirements.txt && \
+    echo "=== Patched requirements.txt ===" && \
+    grep numpy requirements.txt
+
+# Install Python dependencies
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt && \
+    pip install -e .
+
+# Set PYTHONPATH
+ENV PYTHONPATH="${PYTHONPATH}:/workspace/YOLO-One"
+
+# Comprehensive verification
+RUN echo "=== Package Verification ===" && \
+    python -c "import numpy; print(f'NumPy: {numpy.__version__}'); assert numpy.__version__.startswith('1.'), 'NumPy 2.x detected!'" && \
+    python -c "import torch; print(f'PyTorch: {torch.__version__}')" && \
+    python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" && \
+    python -c "import yolo_one; print('YOLO-One: Imported successfully')" && \
+    echo "=== ✅ All checks passed ==="
+
+WORKDIR /workspace/YOLO-One
+
+CMD ["/bin/bash"]
