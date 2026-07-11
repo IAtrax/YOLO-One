@@ -60,7 +60,7 @@ metrics:
   max_detections: 300
 
 validation:
-  val_interval: 3
+  val_interval: 5
   save_best: true
   patience: 50
   min_delta: 0.001

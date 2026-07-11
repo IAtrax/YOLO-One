@@ -115,7 +115,7 @@ class YoloOneLoss(nn.Module):
             box_losses.append(scale_box_loss)
             obj_losses.append(scale_obj_loss)
 
-        # Average across scales (pas de somme!)
+       
         avg_box_loss = torch.stack(box_losses).mean() if len(box_losses) > 0 else torch.tensor(0.0, device=device)
         avg_obj_loss = torch.stack(obj_losses).mean() if len(obj_losses) > 0 else torch.tensor(0.0, device=device)
 

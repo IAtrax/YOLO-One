@@ -347,7 +347,6 @@ class YoloOneTrainer:
                 loss=loss_dict['total_loss'].item(),
                 box_loss=loss_dict['box_loss'].item(),
                 obj_loss=loss_dict['obj_loss'].item(),
-                moe_loss=loss_dict.get('moe_balance_loss', torch.tensor(0.0)).item(),
                 lr=f"{current_lr:.2e}"
             )
             
@@ -355,13 +354,11 @@ class YoloOneTrainer:
         avg_loss = running_loss / num_batches
         avg_box_loss = running_box_loss / num_batches
         avg_obj_loss = running_obj_loss / num_batches
-        avg_moe_loss = running_moe_loss / num_batches
         
         return {
             'total_loss': avg_loss,
             'box_loss': avg_box_loss,
             'obj_loss': avg_obj_loss,
-            'moe_balance_loss': avg_moe_loss,
             'epoch_time': epoch_time,
             'batches_per_second': num_batches / epoch_time,
             'optimization_steps': step_count
@@ -434,7 +431,6 @@ class YoloOneTrainer:
                 f"Loss: {metrics.get('total_loss', 0):.4f} - "
                 f"Box Loss: {metrics.get('box_loss', 0):.4f} - "
                 f"Obj Loss: {metrics.get('obj_loss', 0):.4f} - "
-                f"MoE Loss: {metrics.get('moe_balance_loss', 0):.4f} - "
                 f"Steps: {metrics.get('optimization_steps', 0)}"
             )
 

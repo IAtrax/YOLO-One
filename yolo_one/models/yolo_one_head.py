@@ -15,7 +15,6 @@ import torch.nn as nn
 
 from yolo_one.models.common import Conv
 
-
 class Scale(nn.Module):
     """Learnable scalar (per level) to stabilize bbox regression magnitude."""
     def __init__(self, init_value: float = 1.0) -> None:
@@ -109,6 +108,7 @@ class YoloOneDetectionHead(nn.Module):
         - decoded:      list of [B, 5, Hk, Wk] with xyxy normalized to image and conf=sigmoid(obj), if decode=True
     """
     def __init__(self, config: Dict[str, Any]) -> None:
+        
         super().__init__()
         self.config = config
 
@@ -120,7 +120,6 @@ class YoloOneDetectionHead(nn.Module):
         head_mid: Optional[Union[int, Sequence[int]]] = config.get("head_channels", None)
         num_head_convs: int = int(config.get("num_head_convs", 2))
         obj_prior: float = float(config.get("obj_prior", 0.01))
-        self.moe_routing_threshold: float = float(config.get("moe_routing_threshold", 0.5))
 
         self.level_heads = nn.ModuleList()
         for i, c_in in enumerate(self.in_channels):
@@ -162,53 +161,14 @@ class YoloOneDetectionHead(nn.Module):
         if not isinstance(x, (list, tuple)) or len(x) != len(self.in_channels):
             raise ValueError("Expected a list [P3, P4, P5] matching configured in_channels")
 
-        use_moe_routing = not self.training and gate_scores is not None
-
-        if use_moe_routing:
-            above_threshold_mask = gate_scores > self.moe_routing_threshold
-
-            num_above_threshold = above_threshold_mask.sum(dim=1)
-
-            single_expert_mask = (num_above_threshold == 1).unsqueeze(1)
-            multi_expert_mask = (num_above_threshold > 1).unsqueeze(1)
-
-            top2_indices = torch.topk(gate_scores, k=2, dim=1).indices
-            top2_mask = torch.zeros_like(gate_scores, dtype=torch.bool).scatter_(1, top2_indices, True)
-
-            experts_to_use = (above_threshold_mask * single_expert_mask) | (top2_mask * multi_expert_mask)
-
-            num_activated = experts_to_use.sum(dim=1)
-            fallback_mask = (num_activated == 0)
-            if fallback_mask.any():
-                fallback_indices = torch.argmax(gate_scores[fallback_mask], dim=1)
-                experts_to_use[fallback_mask, fallback_indices] = True
-
-            batch_size = x[0].shape[0]
-            min_val = torch.finfo(x[0].dtype).min
-            obj_logits = [torch.full((batch_size, 1, *feat.shape[2:]), min_val, device=feat.device, dtype=feat.dtype) for feat in x]
-            bboxs = [torch.zeros(batch_size, 4, *feat.shape[2:], device=feat.device, dtype=feat.dtype) for feat in x]
-
-            for i, level_head in enumerate(self.level_heads):
-                batch_mask = experts_to_use[:, i]
-                if batch_mask.any():
-                    feat_slice = x[i][batch_mask]
-                    out = level_head(feat_slice)
-                    obj_logits[i][batch_mask] = out["obj_logits"]
-                    bboxs[i][batch_mask] = out["bbox"]
-
-            detections = [torch.cat([obj, bbox], dim=1) for obj, bbox in zip(obj_logits, bboxs)]
-
-        else:
-            detections: List[torch.Tensor] = []
-            obj_logits: List[torch.Tensor] = []
-            bboxs: List[torch.Tensor] = []
-            
-
-            for i, feat in enumerate(x):
-                out = self.level_heads[i](feat)
-                detections.append(out["detections"])
-                obj_logits.append(out["obj_logits"])
-                bboxs.append(out["bbox"])
+        detections: List[torch.Tensor] = []
+        obj_logits: List[torch.Tensor] = []
+        bboxs: List[torch.Tensor] = []    
+        for i, feat in enumerate(x):
+            out = self.level_heads[i](feat)
+            detections.append(out["detections"])
+            obj_logits.append(out["obj_logits"])
+            bboxs.append(out["bbox"])
                 
         outputs: Dict[str, Any] = {
             "detections": detections,
@@ -221,14 +181,11 @@ class YoloOneDetectionHead(nn.Module):
                 raise ValueError("img_size=[H_img, W_img] is required when decode=True")
             h_img, w_img = int(img_size[0]), int(img_size[1])
 
-            if use_moe_routing:
-                any_expert_activated = experts_to_use.any(dim=0)
-            else:
-                any_expert_activated = torch.ones(len(self.level_heads), dtype=torch.bool, device=x[0].device)
+            activated = torch.ones(len(self.level_heads), dtype=torch.bool, device=x[0].device)
 
             decoded: List[torch.Tensor] = []
             for i, (pred, stride) in enumerate(zip(detections, self.strides)):
-                if not any_expert_activated[i]:
+                if not activated[i]:
                     continue
 
                 b, _, hk, wk = pred.shape
@@ -301,6 +258,5 @@ def create_yolo_one_head(
         "return_features": kwargs.get("return_features", True),
         "refine_features": kwargs.get("refine_features", False),
         "obj_prior": kwargs.get("obj_prior", 0.01),
-        "moe_routing_threshold": kwargs.get("moe_routing_threshold", 0.5),
     }
     return YoloOneDetectionHead(config)
